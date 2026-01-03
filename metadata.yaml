@@ -3,4 +3,4 @@ display_name: 战舰世界-Yuyuko # 用于展示的名字，可以是方便人�
 desc: 战舰世界战绩查询机器人。 # 插件简短描述
 version: v0.0.1 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: 西行寺雨季 # 作者
-repo: https://github.com/Soulter/helloworld # 插件的仓库地址
+repo: https://github.com/JustOneSummer/AstrByWowsYuyukoBot
