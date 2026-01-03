@@ -1,0 +1,38 @@
+{
+  "wows_token": {
+    "description": "yuyuko api token 加群申请:967546463",
+    "type": "string",
+    "hint": "加群申请:967546463",
+    "default": "123456:111111111111"
+  },
+  "use_broswer": {
+    "description": "chromium/firefox，默认chromium，性能大约为firefox三倍",
+    "type": "string",
+    "hint": "请选择chromium/firefox",
+    "default": "chromium"
+  },
+  "wows_proxy_status": {
+    "description": "是否启用代理",
+    "type": "bool",
+    "hint": "默认 False",
+    "default": false
+  },
+  "wows_proxy": {
+    "description": "代理地址",
+    "type": "string",
+    "hint": "请输入代理地址",
+    "default": "http://127.0.0.1:7890"
+  },
+  "http2_status": {
+    "description": "是否开启http2",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "local_test": {
+    "description": "是否开启调试模式",
+    "type": "bool",
+    "hint": "默认 False",
+    "default": false
+  }
+}

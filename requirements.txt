@@ -1,1 +1,1 @@
-hikari-core
+hikari-core>=1.2.0

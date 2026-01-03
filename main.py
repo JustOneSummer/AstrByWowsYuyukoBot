@@ -1,11 +1,11 @@
-import asyncio
 import shutil
 from collections import defaultdict, namedtuple
 from hashlib import md5
 
-from astrbot.api import logger
+import asyncio
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star import StarTools
 from hikari_core import Hikari_Model, init_hikari, callback_hikari, hikari_config
@@ -15,19 +15,32 @@ from hikari_core.config import set_hikari_config
 SelectState = namedtuple('SelectState', ['state', 'index', 'list'])
 SelectProcess = defaultdict[str, SelectState](lambda: SelectState(False, None, None))
 
-
-@register(name="astrbot_plugin_wows-yuyuko", author="西行寺雨季", version="0.0.1", desc="战舰世界机器人")
 class WowsYuyuko(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        self.context = context
+        self.config = config
 
     async def initialize(self):
-        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
+        """初始化"""
         try:
-            set_hikari_config(use_broswer='chromium', http2=True, proxy='http://127.0.0.1:7890',
-                              local_test=True,
-                              token='2622749113:TAN9iMARSDJbzLVOUK1a9cTSiKtb32GIbpr', yuyuko_type='QQ',
-                              game_path=str(StarTools.get_data_dir("wows-yuyuko")))
+            yuyuko_type = 'AstrBot'
+            use_broswer = self.config.get("use_broswer")
+            http_status = self.config.get("http2_status")
+            local_test = self.config.get("local_test")
+            wows_token = self.config.get("wows_token")
+            wows_proxy_status = self.config.get("wows_proxy_status")
+            wows_proxy = self.config.get("wows_proxy")
+            if wows_proxy_status:
+                set_hikari_config(use_broswer=use_broswer, http2=http_status, proxy=wows_proxy,
+                                  local_test=local_test,
+                                  token=wows_token, yuyuko_type=yuyuko_type,
+                                  game_path=str(StarTools.get_data_dir("wows-yuyuko")))
+            else:
+                set_hikari_config(use_broswer=use_broswer, http2=http_status, proxy=None,
+                                  local_test=local_test,
+                                  token=wows_token, yuyuko_type=yuyuko_type,
+                                  game_path=str(StarTools.get_data_dir("wows-yuyuko")))
             temp_dir = get_cache_file() / "file_img_temp"
             temp_dir.mkdir(parents=True, exist_ok=True)
             logger.info("wows-yuyuko插件初始化成功")
@@ -38,7 +51,12 @@ class WowsYuyuko(Star):
     @filter.command("wws")
     async def wws(self, event: AstrMessageEvent):
         try:
-            platform = "QQ"
+            "识别平台"
+            if event.get_platform_name() == "aiocqhttp":
+                platform = "QQ"
+            else:
+                await event.send(MessageChain().message(f"不支持的平台消息 name={event.get_platform_name()}"))
+                return None
             "开始处理用户发送的指令"
             message_str = remove_command_prefix(event.message_str)  # 用户发的纯文本消息字符串
             hikari = await init_hikari(command_text=message_str, platform=platform, PlatformId=event.get_sender_id(), GroupId=event.get_group_id())
