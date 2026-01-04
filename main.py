@@ -18,7 +18,7 @@ from hikari_core.config import set_hikari_config
 class SelectState(NamedTuple):
     state: bool
     index: int | None
-    list: list | None
+    options: list | None
     event: asyncio.Event | None = None
 
 
@@ -90,29 +90,29 @@ class WowsYuyuko(Star):
         try:
             msg = str(event.message_str)
             user_id = str(event.get_sender_id())
-            state = self.select_process[user_id]
-            # 如果用户在选择状态中且输入是数字
-            if state.state and msg.isdigit():
-                choice = int(msg)
-
-                # 检查选择是否有效
-                if 1 <= choice <= len(state.list):
-                    # 更新状态并触发事件
-                    self.select_process[user_id] = state._replace(
-                        state=False,
-                        index=choice
-                    )
-                    # 触发事件
-                    if state.event:
-                        state.event.set()
-                else:
-                    # 无效选择，提示用户
-                    await event.send(
-                        MessageChain()
-                        .at(event.get_sender_name(), event.get_sender_id())
-                        .message(f"请选择 1-{len(state.list)} 之间的序号")
-                    )
-            return None
+            if user_id in self.select_process:
+                state = self.select_process[user_id]
+                # 如果用户在选择状态中且输入是数字
+                if state.state and msg.isdigit():
+                    choice = int(msg)
+                    # 检查选择是否有效
+                    if 1 <= choice <= len(state.options):
+                        # 更新状态并触发事件
+                        self.select_process[user_id] = state._replace(
+                            state=False,
+                            index=choice
+                        )
+                        # 触发事件
+                        if state.event:
+                            state.event.set()
+                    else:
+                        # 无效选择，提示用户
+                        await event.send(
+                            MessageChain()
+                            .at(event.get_sender_name(), event.get_sender_id())
+                            .message(f"请选择 1-{len(state.list)} 之间的序号")
+                        )
+                return None
         except Exception as e:
             logger.exception(f"指令选择器处理异常 {e}")
             return None
@@ -165,7 +165,7 @@ class WowsYuyuko(Star):
         self.select_process[user_id] = SelectState(
             state=True,
             index=None,
-            list=hikari.Input.Select_Data,
+            options=hikari.Input.Select_Data,
             event=event
         )
         try:
@@ -186,7 +186,7 @@ class WowsYuyuko(Star):
             self.select_process[user_id] = SelectState(
                 state=False,
                 index=None,
-                list=None,
+                options=None,
                 event=None
             )
 
