@@ -110,7 +110,7 @@ class WowsYuyuko(Star):
                         await event.send(
                             MessageChain()
                             .at(event.get_sender_name(), event.get_sender_id())
-                            .message(f"请选择 1-{len(state.list)} 之间的序号")
+                            .message(f"请选择 1-{len(state.options)} 之间的序号")
                         )
                 return None
         except Exception as e:
