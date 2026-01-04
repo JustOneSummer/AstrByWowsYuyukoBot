@@ -1,3 +1,4 @@
+import shutil
 from collections import defaultdict
 from hashlib import md5
 from typing import NamedTuple
@@ -41,16 +42,12 @@ class WowsYuyuko(Star):
             wows_token = self.config.get("wows_token")
             wows_proxy_status = self.config.get("wows_proxy_status")
             wows_proxy = self.config.get("wows_proxy")
-            if wows_proxy_status:
-                set_hikari_config(use_broswer=use_broswer, http2=http_status, proxy=wows_proxy,
-                                  local_test=local_test,
-                                  token=wows_token, yuyuko_type=yuyuko_type,
-                                  game_path=str(StarTools.get_data_dir("wows-yuyuko")))
-            else:
-                set_hikari_config(use_broswer=use_broswer, http2=http_status, proxy=None,
-                                  local_test=local_test,
-                                  token=wows_token, yuyuko_type=yuyuko_type,
-                                  game_path=str(StarTools.get_data_dir("wows-yuyuko")))
+            proxy = wows_proxy if wows_proxy_status else None
+            set_hikari_config(use_broswer=use_broswer, http2=http_status,
+                              proxy=proxy,
+                              local_test=local_test,
+                              token=wows_token, yuyuko_type=yuyuko_type,
+                              game_path=str(StarTools.get_data_dir("wows-yuyuko")))
             temp_dir = get_cache_file() / "file_img_temp"
             temp_dir.mkdir(parents=True, exist_ok=True)
             logger.info("wows-yuyuko插件初始化成功")
@@ -122,8 +119,14 @@ class WowsYuyuko(Star):
 
     async def terminate(self):
         try:
-            # 插件卸载时执行
-            return None
+            """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
+            logger.info("开始执行wows-yuyuko插件临时资源销毁")
+            temp_dir = get_cache_file() / "file_img_temp"
+            if temp_dir.exists() and temp_dir.is_dir():
+                # 删除整个目录及其所有内容
+                shutil.rmtree(temp_dir)
+                print(f"已删除file_img_temp目录: {temp_dir}")
+            logger.info("wows-yuyuko插件临时资源销毁完成")
         except Exception as e:
             logger.error(f"删除file_img_temp目录失败: {e}")
 
