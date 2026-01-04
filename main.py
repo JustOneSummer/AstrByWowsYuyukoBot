@@ -124,8 +124,7 @@ class WowsYuyuko(Star):
             temp_dir = get_cache_file() / "file_img_temp"
             if temp_dir.exists() and temp_dir.is_dir():
                 # 删除整个目录及其所有内容
-                shutil.rmtree(temp_dir)
-                print(f"已删除file_img_temp目录: {temp_dir}")
+                await asyncio.to_thread(shutil.rmtree, temp_dir)
             logger.info("wows-yuyuko插件临时资源销毁完成")
         except Exception as e:
             logger.error(f"删除file_img_temp目录失败: {e}")
