@@ -1,6 +1,6 @@
 name: astrbot_plugin_wows-yuyuko
 display_name: 战舰世界-Yuyuko
 desc: 战舰世界战绩查询机器人
-version: v0.0.1
+version: v0.0.2
 author: 西行寺雨季
 repo: https://github.com/JustOneSummer/AstrByWowsYuyukoBot
