@@ -50,15 +50,6 @@ class WowsYuyuko(Star):
                               game_path=str(StarTools.get_data_dir("wows-yuyuko")))
             temp_dir = get_cache_file() / "file_img_temp"
             temp_dir.mkdir(parents=True, exist_ok=True)
-            #检测是否已经初始化浏览器
-            playwright_file = get_cache_file() / 'playwright.txt'
-            if not playwright_file.exists():
-                from hikari_core.Html_Render.browser import install_browser
-                await install_browser(use_broswer)
-                with (playwright_file.open("w") as f):
-                    f.write(use_broswer)
-                logger.info("已初始化浏览器，请重启项目")
-
             logger.info("wows-yuyuko插件初始化成功")
         except Exception as e:
             logger.error(f"wows-yuyuko插件初始化失败: {e}")
