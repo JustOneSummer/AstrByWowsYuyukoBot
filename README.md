@@ -13,8 +13,12 @@ astrbot管理面里面找到平台日志，右上角有个安装安装pip依赖
 暂时仅支持QQ个人，频道版本后续支持
 
 # onebot v11 配置
-```aiignore
+```
 ws://127.0.0.1:8080/onebot/v11/ws
+```
+或者
+```
+ws://127.0.0.1:8080/ws
 ```
 
 ### 机器人插件冲突问题
@@ -22,10 +26,8 @@ ws://127.0.0.1:8080/onebot/v11/ws
 如果你同时安装了其他插件然后发现docker重启后无法启动，一般是下面两个依赖导致的。
 注意pydantic最新版本hikari-core不兼容，sqlmodel最新版本也不兼容pydantic。
 
+
 ```
 sqlmodel==0.0.24
 pydantic==2.10.3
 ```
-
-### 如果你已经安装了插件，请执行以下命令
-pip install sqlmodel==0.0.24 pydantic==2.10.3 -i https://pypi.tuna.tsinghua.edu.cn/simple
