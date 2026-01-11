@@ -16,6 +16,8 @@ from hikari_core import Hikari_Model, init_hikari, callback_hikari, hikari_confi
 from hikari_core.cache_utils import get_cache_file
 from hikari_core.config import set_hikari_config
 
+get_cache_file()
+
 
 class SelectState(NamedTuple):
     state: bool
@@ -63,6 +65,8 @@ class WowsYuyuko(Star):
             "识别平台"
             if event.get_platform_name() == "aiocqhttp":
                 platform = "QQ"
+            elif event.get_platform_name() == "qq_official_webhook":
+                platform = "QQ_CHANNEL"
             else:
                 await event.send(MessageChain().message(f"不支持的平台消息 name={event.get_platform_name()}"))
                 return None
