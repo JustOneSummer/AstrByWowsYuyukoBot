@@ -1,10 +1,12 @@
 import shutil
+import os
+import sys
+import aiofiles
+import asyncio
+
 from collections import defaultdict
 from hashlib import md5
 from typing import NamedTuple
-
-import aiofiles
-import asyncio
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
@@ -85,6 +87,18 @@ class WowsYuyuko(Star):
             await event.send(MessageChain().message("呜呜呜发生了错误，可能是网络问题，如果过段时间不能恢复请联系麻麻哦~"))
         return None
 
+    @filter.command("wws更新")
+    async def wws_update(self, event: AstrMessageEvent):
+        try:
+            from hikari_core.data_source import __version__
+            await event.send(MessageChain().message(f"开始更新hikari-core 当前版本{__version__}"))
+            logger.info(f'当前解释器路径{sys.executable}')
+            os.system(f'{sys.executable} -m pip install hikari-core -i https://pypi.tuna.tsinghua.edu.cn/simple --upgrade')
+            await event.send(MessageChain().message("更新完成，请在AstrBot的WebUi面板重启AstrBot"))
+        except RuntimeError as e:
+            logger.exception(f"指令处理异常 {e}")
+            await event.send(MessageChain().message("更新hikari-core异常！"))
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def change_select_state(self, event: AstrMessageEvent):
         try:
@@ -121,6 +135,8 @@ class WowsYuyuko(Star):
         try:
             """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
             logger.info("开始执行wows-yuyuko插件临时资源销毁")
+            from hikari_core.config import _scheduler
+            _scheduler.shutdown()
             temp_dir = get_cache_file() / "file_img_temp"
             if temp_dir.exists() and temp_dir.is_dir():
                 # 删除整个目录及其所有内容
