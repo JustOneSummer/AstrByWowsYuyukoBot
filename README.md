@@ -31,3 +31,16 @@ ws://127.0.0.1:8080/ws
 sqlmodel==0.0.24
 pydantic==2.10.3
 ```
+
+# 安装字体（yuyuko模板使用的是微软雅黑）
+
+从Windows把雅黑相关字体复制到下面的目录
+
+### 创建字体目录（如果不存在）
+sudo mkdir -p /usr/share/fonts/truetype/microsoft/
+
+### 复制字体文件到目录（假设文件已放在当前用户的Downloads目录）
+sudo cp ~/Downloads/msyh*.ttc /usr/share/fonts/truetype/microsoft/
+
+### 更新字体缓存
+sudo fc-cache -fv
