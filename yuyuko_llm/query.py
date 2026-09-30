@@ -122,12 +122,14 @@ def build_ship_recent_command(
     server: str | None = None,
     nickname: str | None = None,
 ) -> str:
-    """查单船近期：``ship.recent <船名> [天数]``。
+    """查单船近期：``ship recent <船名> [天数]``。
 
-    ``ship.recent`` 必须排在 ``ship`` 之前（hikari 的指令表有说明），
-    这里直接给完整指令词，不做字符串替换 —— 船名里恰好含 ``ship`` 也不会被改坏。
+    ▍注意不是 ``ship.recent``
+    hikari 的指令表里只有 ``ship.rank`` 这个带点的，单船近期是 **ship 的二级指令**
+    （``router.py`` 的 ``ship_command_list = [command(('recent', '近期'), get_ShipRecent)]``），
+    所以要写成两个词 ``ship recent``。写成 ``ship.recent`` 会报「未识别的指令」。
     """
-    parts = [*_identity_tokens(server, nickname), "ship.recent", str(ship)]
+    parts = [*_identity_tokens(server, nickname), "ship", "recent", str(ship)]
     if days:
         parts.append(str(days))
     return " ".join(parts)

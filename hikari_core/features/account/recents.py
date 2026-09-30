@@ -5,6 +5,7 @@ from hikari_core.core.http_client import get_client_yuyuko
 from hikari_core.core.http_error_handler import handle_yuyuko_errors
 from hikari_core.core.model import Hikari_Model
 from hikari_core.core.template_registry import Templates
+from hikari_core.features.bind import resolve_default_bind
 from hikari_core.features.api import get_AccountIdByName
 
 
@@ -34,9 +35,14 @@ async def get_RecentsInfo(hikari: Hikari_Model) -> Hikari_Model:
             'shipId': 0,
         }
     else:
+        # 「查自己」：解析平台用户**绑定的游戏账号**，不能拿 PlatformId 当 accountId
+        # （那是平台侧用户 ID / QQ 号，上游查不到会返回空记录）
+        bind = await resolve_default_bind(hikari)
+        if not bind or not bind.get('accountId'):
+            return hikari.failed('该用户似乎还没绑定窝窝屎账号')
         params = {
-            'server': hikari.Input.Platform,
-            'accountId': hikari.Input.PlatformId,
+            'server': bind.get('server') or hikari.Input.Platform,
+            'accountId': bind['accountId'],
             'dateTime': hikari.Input.Recent_Date,
             'day': hikari.Input.Recent_Day,
             'shipId': 0,

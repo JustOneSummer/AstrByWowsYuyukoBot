@@ -427,8 +427,15 @@ class BattleStatsExtractor:
         return summary
 
     @classmethod
-    def roll_summary(cls, data: Any) -> dict[str, Any]:
-        """随机战舰：只取被抽中的那条船的信息。"""
+    def roll_summary(cls, data: Any) -> Any:
+        """随机战舰。
+
+        上游对 roll 的返回**两种形状都有**：
+        - 字符串文案（如「你抽到的是「大和」哦～」）→ 直接转达，别再去找字段
+        - 结构化 ``{shipInfo: {...}}`` → 提取船只信息
+        """
+        if isinstance(data, str):
+            return data
         return cls._pick(data, cls.SHIP_FIELDS)
 
     # ---------------------------------------------------------------- 筛选 / 单场

@@ -52,6 +52,14 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
+# Windows 控制台默认 GBK，打印战绩数据里的特殊字符（舰名符号等）会抛
+# UnicodeEncodeError 把整个用例打断。这里强制走 UTF-8，错误只替换不中断。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
 # 测试用的缓存目录（与插件运行时的 data/ 分开，不污染线上数据）
 TEST_CACHE = PLUGIN_ROOT / "tests" / "_test_cache"
 
@@ -163,6 +171,23 @@ ALL_ORDER = ["account", "ship", "recent", "recent_random", "recent_rank",
              "ship_recent", "recents", "ships", "roll"]
 
 
+# 各用例失败时最常见的原因（打印出来省得对着 [!!] 猜）
+FAIL_HINTS: dict[str, str] = {
+    "recent_rank": "近 7 天没有排位战记录 —— 属正常，换个时间段或确认是否打过排位",
+    "recent_random": "近 7 天没有随机战记录 —— 属正常，确认是否打过随机",
+    "recent": "该时间段没有随机/排位记录 —— 属正常，可换时间段",
+    "ship_recent": "该船在近 7 天没开过 —— 属正常，换条最近玩过的船（或加大天数）",
+    "ship": "该账号没打过这条船 —— 属正常，换条船名",
+    "recents": "单场记录需要先在 yuyuko 侧开启该功能，或该日期没有记录 —— 非代码问题",
+    "ships": "筛选条件没命中任何船 —— 属正常，放宽等级/国家/舰种",
+    "account": "平台用户未绑定游戏账号（或绑定已失效）—— 先用「绑定」功能绑一次",
+}
+
+
+def _fail_hint(case: str) -> str:
+    return FAIL_HINTS.get(case, "上游返回失败或无可提取数据")
+
+
 async def run_case(
     name: str,
     *,
@@ -224,12 +249,28 @@ async def run_case(
             print(f"保存失败: {e}")
 
     if hikari.Status == "wait":
-        _hr("需要用户二次选择（ships 这类）")
+        # ships 这类要用户挑一项才有数据。测试里没有用户，自动选第 1 项走完，
+        # 否则用例会停在「候选列表」上，看不到最终提取结果。
         options = hikari.Input.Select_Data or []
-        print(f"候选条数: {len(options)}")
-        _dump("候选项（前 5 条）", options[:5], limit=1500)
-        print("\n这属于正常流程：实际使用时会把这些转述给用户挑序号。")
-        return True
+        _hr(f"需要二次选择 —— 自动选第 1 项（共 {len(options)} 项）")
+        if not options:
+            print("候选列表为空，无法继续")
+            return False
+        if verbose:
+            _dump("候选项（前 5 条）", options[:5], limit=1500)
+        try:
+            from hikari_core import callback_hikari
+
+            hikari.Input.Select_Index = 1
+            hikari = await callback_hikari(hikari)
+            print(f"选择后状态: {hikari.Status}")
+        except Exception as e:  # noqa: BLE001
+            print(f"二次选择失败: {e!r}")
+            return False
+        if hikari.Status != "success":
+            _hr("选择后仍未成功")
+            print(f"Status = {hikari.Status}  |  {hikari.Output.Data}")
+            return False
 
     if hikari.Status != "success":
         _hr("查询未成功（这本身就是一种结果）")
@@ -344,8 +385,8 @@ async def main() -> int:
         description="LLM 提取/输出端到端测试（真实调用 yuyuko API）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--case", default="recent",
-                    help=f"用例：{', '.join(ALL_ORDER)}，或 all 跑全部（默认 recent）")
+    ap.add_argument("--case", default="all",
+                    help=f"用例：{', '.join(ALL_ORDER)}，或 all 跑全部（默认 all）")
     ap.add_argument("--token", default=DEFAULT_TOKEN,
                     help="yuyuko API token（默认用内置的公开 token；也可用环境变量 WOWS_TOKEN 覆盖）")
     ap.add_argument("--platform-id", default=DEFAULT_PLATFORM_ID,
@@ -437,10 +478,16 @@ async def main() -> int:
             results[case] = False
 
     _hr("汇总")
+    ok_cases = [c for c, ok in results.items() if ok]
+    failed = [c for c, ok in results.items() if not ok]
     for case, ok in results.items():
         # 只用 ASCII 标记：Windows 控制台默认 GBK，特殊符号会直接抛 UnicodeEncodeError
         print(f"  [{'OK' if ok else '!!'}] {case}")
-    failed = [c for c, ok in results.items() if not ok]
+    if failed:
+        print("\n失败原因（多数是没数据，不是代码问题）：")
+        for case in failed:
+            print(f"  · {case}: {_fail_hint(case)}")
+    print(f"\n通过 {len(ok_cases)}/{len(results)}")
     return 1 if failed else 0
 
 

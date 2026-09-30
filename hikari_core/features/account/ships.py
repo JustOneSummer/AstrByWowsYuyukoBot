@@ -7,6 +7,7 @@ from hikari_core.core.http_error_handler import handle_yuyuko_errors
 from hikari_core.core.model import Hikari_Model
 from hikari_core.core.template_registry import Templates
 from hikari_core.features.api import get_AccountIdByName
+from hikari_core.features.bind import resolve_default_bind
 
 
 def _cn_of(value, lists) -> str:
@@ -55,8 +56,14 @@ async def get_Ships(hikari: Hikari_Model) -> Hikari_Model:
         server = hikari.Input.Server
         account_id = hikari.Input.AccountId
     else:
-        server = hikari.Input.Platform
-        account_id = hikari.Input.PlatformId
+        # 「查自己」：必须解析平台用户**绑定的游戏账号**，
+        # 不能拿 Input.PlatformId 当 accountId —— 那是平台侧用户 ID（QQ 号），
+        # 拿去请求会因为查不到该账号而返回空列表。
+        bind = await resolve_default_bind(hikari)
+        if not bind or not bind.get('accountId'):
+            return hikari.failed('该用户似乎还没绑定窝窝屎账号')
+        server = bind.get('server') or hikari.Input.Platform
+        account_id = bind['accountId']
 
     url = f'{hikari_config.yuyuko_url}/public/wows/account/ship/info/query_list'
     params = {
