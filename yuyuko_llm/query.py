@@ -63,7 +63,11 @@ def normalize_server(text: str | None) -> str | None:
 
 
 def _identity_tokens(server: str | None, nickname: str | None) -> list[str]:
-    """查别人时的「服务器 + 昵称」前缀；两者都没给就返回空（= 查自己）。"""
+    """查别人时的「服务器 + 昵称」前缀；没给昵称就返回空（= 查自己）。
+
+    ``server`` 可选：只给昵称也能查（hikari 会按昵称在所有服务器里找或要求补服务器），
+    所以这里不强制两个都给。
+    """
     tokens: list[str] = []
     if nickname:
         if server:
@@ -73,8 +77,16 @@ def _identity_tokens(server: str | None, nickname: str | None) -> list[str]:
 
 
 def build_account_command(server: str | None = None, nickname: str | None = None) -> str:
-    """查总表：``<服务器> <昵称>``，都不给就是查自己。"""
-    return " ".join(_identity_tokens(server, nickname))
+    """查总表：``me`` / ``<服务器> <昵称>``。
+
+    ▍为什么查自己必须显式带上 ``me``
+    hikari 的指令路由要靠 ``_is_identity_query`` 识别「无指令关键词的身份查询」，
+    而它对**空列表返回 False**（见 ``commands/router.py``）——
+    也就是说空命令会被判成「未识别的指令，请发送 wws help」，
+    根本走不到总表逻辑。所以查自己时必须显式给 ``me``。
+    """
+    tokens = _identity_tokens(server, nickname)
+    return " ".join(tokens) if tokens else "me"
 
 
 def build_ship_command(

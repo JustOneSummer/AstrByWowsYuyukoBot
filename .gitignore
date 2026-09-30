@@ -5,3 +5,5 @@ data/
 __pycache__/
 *.pyc
 .workbuddy/
+# 测试脚本跑出来的缓存（战舰资源等，不要入库）
+tools/_test_cache/
