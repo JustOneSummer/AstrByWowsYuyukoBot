@@ -58,9 +58,7 @@ TEST_CACHE = PLUGIN_ROOT / "tests" / "_test_cache"
 # yuyuko 的公开测试 token（本来就是公开的），也可以用 --token / 环境变量覆盖
 DEFAULT_TOKEN = os.environ.get("WOWS_TOKEN", "2622749113:TAN9iMARSDJbzLVOUK1a9cTSiKtb32GIbpr")
 
-# ▍平台 ID 是**平台侧的用户 ID**（QQ 号），不是游戏 accountId。
-#   「查自己」时 hikari 拿它去查该平台用户绑定的游戏账号
-#   （2022515210 = Nahida_official 是游戏 accountId，填这里必然查不到）。
+
 DEFAULT_PLATFORM_ID = "2622749113"
 # 平台类型：QQ（对应 AstrBot 的 aiocqhttp 适配器）
 DEFAULT_PLATFORM = "QQ"
@@ -178,18 +176,16 @@ async def run_case(
     raw_only: bool,
     fixture: Path | None = None,
     platform: str = DEFAULT_PLATFORM,
+    verbose: bool = False,
+    truncate: bool = False,
 ) -> bool:
     """跑一个用例。返回是否成功拿到数据。
 
     ``fixture`` 给了就读本地 JSON（离线，不打 API），否则真实调用。
+    默认只打印**最终给 LLM 的文本**；``verbose`` 才额外打印提取结果与原始数据。
     """
     builder, extractor, desc = _case_table()[name]
     command_text = builder(ship, server, nickname)
-
-    _hr(f"用例 {name}  —— {desc}")
-    print(f"平台/平台ID   : {platform} / {platform_id}")
-    print(f"查询身份      : {'服务器+昵称 ' + repr((server, nickname)) if nickname else '查自己（需已绑定）'}")
-    print(f"command_text  : {command_text!r}")
 
     if fixture is not None:
         from hikari_core import Hikari_Model
@@ -198,7 +194,7 @@ async def run_case(
         hikari = Hikari_Model()
         hikari.success(raw)
         hikari.Output.Template = "(离线夹具，无模板)"
-        print(f"数据来源      : 离线夹具 {fixture}")
+        source = f"离线夹具 {fixture}"
     else:
         from hikari_core import init_hikari_no_output
 
@@ -209,9 +205,13 @@ async def run_case(
             BotId=bot_id,
             GroupId=None,
         )
+        source = f"平台 {platform}/{platform_id}"
 
-    print(f"状态          : {hikari.Status}")
-    print(f"模板          : {hikari.Output.Template}")
+    _hr(f"用例 {name} —— {desc}")
+    identity = "查自己（走绑定关系）" if not nickname else f"查 {server or ''} {nickname}".strip()
+    print(f"{source}  |  command_text {command_text!r}  |  {identity}  |  {hikari.Status}")
+    if verbose:
+        print(f"模板: {hikari.Output.Template}")
 
     if save_path:
         try:
@@ -241,8 +241,7 @@ async def run_case(
         _dump("原始 Output.Data", hikari.Output.Data)
         return True
 
-    # ---------------- ② 提取 ----------------
-    _hr("② 提取结果（喂给 LLM 的字段）")
+    # ---------------- 提取 ----------------
     from yuyuko_llm import BattleStatsExtractor as E
 
     raw = hikari.Output.Data
@@ -255,24 +254,32 @@ async def run_case(
         "roll": E.roll_summary,
     }
     extracted = extractors.get(extractor, lambda d: d)(raw)
-    _dump("提取结果", extracted)
+
     if not extracted:
-        print("\n[!] 提取结果是空的：说明字段路径跟上游对不上（不是上游没数据）")
+        print("\n[!] 提取结果是空的：字段路径跟上游对不上（不是上游没数据）")
+        if fixture is not None:
+            print(f"    （当前夹具是 {fixture.name}，可能不是「{name}」这个查询的响应；"
+                  f"离线测试请用对应的夹具）")
 
-    # ---------------- ① 原始数据 ----------------
-    _hr("① 原始 Output.Data（对照用，看提取漏没漏）")
-    _dump("原始数据", raw)
+    # 细节默认不打印 —— 平时只关心「最终给 LLM 的是什么」，用 --verbose 才展开
+    if verbose:
+        _dump("提取结果（喂给 LLM 的字段）", extracted)
+        _dump("原始 Output.Data（对照用，看提取漏没漏）", raw)
 
-    # ---------------- ③ 给 LLM 的文本 ----------------
-    _hr("③ 给 LLM 的最终文本")
-    print(_format_for_llm(extractor, extracted))
+    # ---------------- 给 LLM 的文本 ----------------
+    _hr("③ 给 LLM 的最终文本" if verbose else "给 LLM 的最终文本")
+    print(_format_for_llm(extractor, extracted, truncate=truncate))
 
     _report_missing(name, raw, extracted)
     return True
 
 
-def _format_for_llm(extractor: str, extracted) -> str:
-    """复刻 ToolExecutor._format_payload 的输出（不依赖 event / runtime）。"""
+def _format_for_llm(extractor: str, extracted, truncate: bool = False) -> str:
+    """复刻 ToolExecutor._format_payload 的输出（不依赖 event / runtime）。
+
+    ``truncate=False``（默认）：不截断，测试时看全量数据。
+    传 True 则按插件的 MAX_PAYLOAD_CHARS 截断，用来核对线上真实会喂多少。
+    """
     sys.path.insert(0, str(PLUGIN_ROOT))
     from yuyuko_llm.executor import MAX_PAYLOAD_CHARS
     from yuyuko_llm.tool_spec import SERVER_CODE_HINT
@@ -291,8 +298,14 @@ def _format_for_llm(extractor: str, extracted) -> str:
         text = json.dumps(extracted, ensure_ascii=False, separators=(",", ":"))
     except (TypeError, ValueError):
         text = str(extracted)
-    if len(text) > MAX_PAYLOAD_CHARS:
-        text = text[:MAX_PAYLOAD_CHARS] + "…（数据过长已截断）"
+    if truncate and len(text) > MAX_PAYLOAD_CHARS:
+        text = text[:MAX_PAYLOAD_CHARS] + f"…（已截断，原长 {len(text)} 字符）"
+    elif not truncate and len(text) > MAX_PAYLOAD_CHARS:
+        # 测试模式不截断，但提示一下线上会截
+        print(
+            f"[提示] 该数据 {len(text)} 字符，超过线上阈值 {MAX_PAYLOAD_CHARS}，"
+            f"实际会截断（加 --truncate 看截断后的效果）"
+        )
 
     head = (
         "以下是用户要查询的战绩数据（JSON），请据此作答，"
@@ -349,7 +362,12 @@ async def main() -> int:
     ap.add_argument("--save", default=None, help="把原始响应存成 JSON 文件")
     ap.add_argument("--fixture", default=None,
                     help="用本地 JSON 夹具离线测试提取（不打 API）；配合 --save 先存一份即可反复跑")
-    ap.add_argument("--raw-only", action="store_true", help="只打印原始数据，不做提取")
+    ap.add_argument("--raw-only", action="store_true",
+                    help="只打印原始响应（排查上游返回什么时用）")
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="额外打印提取结果与原始数据（默认只给最终喂给 LLM 的文本）")
+    ap.add_argument("--truncate", action="store_true",
+                    help="按插件的 MAX_PAYLOAD_CHARS 截断（默认不截断，方便看全量）")
     args = ap.parse_args()
 
     platform_id = args.platform_id
@@ -359,10 +377,11 @@ async def main() -> int:
     if not use_fixture and not args.token:
         # 只在用户显式把 token 清空时才会走到这里
         print("[!] 缺少 token：用 --token 传入或设环境变量 WOWS_TOKEN")
-        print("    （只想验证提取逻辑的话，可以加 --fixture tools/fixtures/account_info.json 离线跑）")
+        print("    （只想验证提取逻辑的话，可以加 --fixture tests/fixtures/account_info.json 离线跑）")
         return 2
 
-    _hr("初始化 hikari-core" + ("（离线夹具模式）" if use_fixture else ""))
+    if args.verbose:
+        _hr("初始化 hikari-core" + ("（离线夹具模式）" if use_fixture else ""))
     from hikari_core import set_hikari_config
 
     TEST_CACHE.mkdir(parents=True, exist_ok=True)
@@ -374,11 +393,12 @@ async def main() -> int:
         image_type="jpeg",
         local_test=True,
     )
-    print(f"缓存目录: {TEST_CACHE}")
-    if args.token:
-        print(f"token   : {args.token[:12]}...")
-    if use_fixture:
-        print("离线模式：不会发起任何 API 请求")
+    if args.verbose:
+        print(f"缓存目录: {TEST_CACHE}")
+        if args.token:
+            print(f"token   : {args.token[:12]}...")
+        if use_fixture:
+            print("离线模式：不会发起任何 API 请求")
 
     cases = ALL_ORDER if args.case == "all" else [args.case]
     bad = [c for c in cases if c not in ALL_ORDER]
@@ -407,6 +427,8 @@ async def main() -> int:
                 raw_only=args.raw_only,
                 fixture=fixture,
                 platform=platform,
+                verbose=args.verbose,
+                truncate=args.truncate,
             )
         except Exception:
             import traceback
