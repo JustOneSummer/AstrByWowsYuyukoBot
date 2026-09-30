@@ -124,11 +124,48 @@ GitHub issue 等）只改这一处。
 - 超过 4000 字符会截断（记录中会标出原始长度）。
 - 日志本身全程包了 try/except，不会因为序列化失败影响业务。
 
+### 提取字段与模板一一对应
+
+提取器按**各界面模板实际读取的字段**来提取（`wws-info-v6.html` / `wws-ship-v6.html` /
+`wws-info-recent*.html` / `wws-ships-v6.html` / `wws-info-recents-v6.html`），做到 1:1：
+
+| 界面 | 节点 | 提取内容 |
+|---|---|---|
+| 总表 | `battleTypeInfo` | 各模式统计 + `prInfo` + `lastBattleTime` + `userInfo.prStatus` |
+| 总表 | `shipTypeInfo` / `levelInfo` | 船型/等级分布（场次、胜率、场均、PR） |
+| 单船 | **`typeInfo`** | 各模式统计（含最高纪录、击杀构成、PR 明细） |
+| 近期 | `battleTypeInfo` + `shipInfoBattleList` | 各模式统计 + 逐船明细 |
+| 单场 | `shipInfos` + `shipnfosTotal` | 逐场记录 + 按船汇总 |
+| 筛选 | `battleTypeInfo` + `filter` + `list` | 筛选条件 + 命中的船 |
+
+单个模式提取出来的字段（对照模板逐项）：
+
+```
+battles survived win_rate avg_damage avg_frags avg_kd avg_xp planesKilled
+fragsByMain fragsByTpd fragsByPlanes fragsByRam fragsByDbomb fragsByAtba
+lastBattleTime
+maxDamageDealt maxFrags maxPlanesKilled maxScoutingDamage maxTotalAgro maxXp
+hit_ratio pr   (+ prInfo.details.originalServer 的 damage/frags/wins)
+```
+
+几个容易踩的点，都已处理：
+
+- **模式节点名有两种**：近期/总表是 `battleTypeInfo`，单船与筛选列表是 `typeInfo`。
+  只认一个会让另一边读成空（表现为「AI 说没有数据」）。
+- **最高纪录在 `shipInfo.maxInfo` 下**，不在 `battleInfo` 里 —— 所以用递归提取，
+  而不是把路径写死。
+- **上游大量用 `{value, color}` 包装**：递归时按**父键名**记值
+  （`maxDamageDealt: 210000`），否则只会拿到一堆互相覆盖的 `value`。
+- **渲染专用字段被过滤**（`color` / `winsData` / `damageData`），省 token 也不干扰模型。
+- **中文名不在数据里**：船型中文（`Battleship → 战列舰`）与服务器中文（`asia → 亚服`）
+  都是模板前端写死的映射，Python 侧自己备了一份。
+
 ### 加字段 / 加工具
 
-- **加提取字段**：只改 `yuyuko_llm/extract.py` 的白名单常量
-  （`BATTLE_FIELDS` / `ACCOUNT_FIELDS` / `SHIP_FIELDS` / `ROW_FIELD_CANDIDATES`），
-  调用方一行都不用动。
+- **加提取字段**：优先改 `yuyuko_llm/extract.py` 的白名单常量
+  （`BATTLE_FIELDS` / `BATTLE_SUBTREES` / `ACCOUNT_FIELDS` / `SHIP_FIELDS` /
+  `ROW_FIELD_CANDIDATES` / `DIST_NODES`）。
+  落在 `BATTLE_SUBTREES` 那几棵子树里的新字段会被**递归自动带出来**，通常不用改代码。
 - **加工具**：在 `main.py` 加一个带 `@llm_tool` 的方法（**必须在这个文件**，
   AstrBot 按模块路径匹配工具归属）并套上 `@tool_guard`，在 `yuyuko_llm/guide.py` 的
   `TOOL_SWITCH_FIELDS` 登记开关，并往 `_conf_schema.json` 补对应配置项。
