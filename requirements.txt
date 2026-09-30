@@ -1,5 +1,8 @@
-hikari-core==1.2.5
-Jinja2~=3.1.6
-playwright~=1.57.0
-sqlmodel==0.0.24
-pydantic==2.10.3
+# hikari-core 已在仓库内以源码形式内置（见 hikari_core/），不再从 PyPI 安装。
+# 同步方式：python tools/sync_hikari_core.py
+httpx[http2]>=0.28.0
+APScheduler>=3.10.1
+pydantic>=2.0.3
+playwright>=1.62.0
+loguru>=0.7.0
+pillow>=12.2.0

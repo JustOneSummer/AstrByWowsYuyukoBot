@@ -3,7 +3,7 @@
     "description": "yuyuko api token 加群申请:967546463",
     "type": "string",
     "hint": "加群申请:967546463",
-    "default": "123456:111111111111"
+    "default": "2622749113:TAN9iMARSDJbzLVOUK1a9cTSiKtb32GIbpr"
   },
   "use_broswer": {
     "description": "chromium/firefox，默认chromium，性能大约为firefox三倍",
@@ -30,7 +30,31 @@
     "default": true
   },
   "local_test": {
-    "description": "是否开启调试模式",
+    "description": "是否开启调试模式（同时会额外落盘渲染用的 HTML）",
+    "type": "bool",
+    "hint": "默认 False",
+    "default": false
+  },
+  "image_type": {
+    "description": "截图输出格式 jpeg/png/webp，png/webp 体积更小但稍慢",
+    "type": "string",
+    "hint": "请选择 jpeg/png/webp",
+    "default": "jpeg"
+  },
+  "user_image_cache_ttl_minutes": {
+    "description": "用户头像/横幅等本地图片缓存的存活时间（分钟），默认 10080 = 7 天；填 <=0 表示永不过期",
+    "type": "int",
+    "hint": "默认 10080（7 天）",
+    "default": 10080
+  },
+  "save_template_html": {
+    "description": "渲染图片时额外保存一份 HTML 到缓存目录 template_html/，便于排查模板问题",
+    "type": "bool",
+    "hint": "默认 False",
+    "default": false
+  },
+  "render_error_fallback": {
+    "description": "浏览器端渲染失败时是否改为回文本错误（关闭则照常截图，报错信息会画在图片里）",
     "type": "bool",
     "hint": "默认 False",
     "default": false
