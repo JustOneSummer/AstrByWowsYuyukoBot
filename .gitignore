@@ -6,4 +6,6 @@ __pycache__/
 *.pyc
 .workbuddy/
 # 测试脚本跑出来的缓存（战舰资源等，不要入库）
-tools/_test_cache/
+tests/_test_cache/
+# 测试时 set_hikari_config 会按 cwd 建默认缓存目录
+tests/data/

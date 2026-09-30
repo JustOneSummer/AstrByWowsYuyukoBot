@@ -33,7 +33,7 @@
 ▍注意
 
 会向 yuyuko API 发真实请求（消耗 token 配额），并把战舰资源缓存到
-`tools/_test_cache/`（首次约 18MB，之后复用）。
+`tests/_test_cache/`（首次约 18MB，之后复用）。
 """
 
 from __future__ import annotations
@@ -53,11 +53,17 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 # 测试用的缓存目录（与插件运行时的 data/ 分开，不污染线上数据）
-TEST_CACHE = PLUGIN_ROOT / "tools" / "_test_cache"
+TEST_CACHE = PLUGIN_ROOT / "tests" / "_test_cache"
 
 # yuyuko 的公开测试 token（本来就是公开的），也可以用 --token / 环境变量覆盖
 DEFAULT_TOKEN = os.environ.get("WOWS_TOKEN", "2622749113:TAN9iMARSDJbzLVOUK1a9cTSiKtb32GIbpr")
-DEFAULT_ACCOUNT_ID = "2022515210"
+
+# ▍平台 ID 是**平台侧的用户 ID**（QQ 号），不是游戏 accountId。
+#   「查自己」时 hikari 拿它去查该平台用户绑定的游戏账号
+#   （2022515210 = Nahida_official 是游戏 accountId，填这里必然查不到）。
+DEFAULT_PLATFORM_ID = "2622749113"
+# 平台类型：QQ（对应 AstrBot 的 aiocqhttp 适配器）
+DEFAULT_PLATFORM = "QQ"
 
 
 def _hr(title: str) -> None:
@@ -171,6 +177,7 @@ async def run_case(
     save_path: Path | None,
     raw_only: bool,
     fixture: Path | None = None,
+    platform: str = DEFAULT_PLATFORM,
 ) -> bool:
     """跑一个用例。返回是否成功拿到数据。
 
@@ -180,7 +187,7 @@ async def run_case(
     command_text = builder(ship, server, nickname)
 
     _hr(f"用例 {name}  —— {desc}")
-    print(f"PlatformId    : {platform_id}")
+    print(f"平台/平台ID   : {platform} / {platform_id}")
     print(f"查询身份      : {'服务器+昵称 ' + repr((server, nickname)) if nickname else '查自己（需已绑定）'}")
     print(f"command_text  : {command_text!r}")
 
@@ -197,7 +204,7 @@ async def run_case(
 
         hikari = await init_hikari_no_output(
             command_text=command_text,
-            platform="QQ",
+            platform=platform,
             PlatformId=platform_id,
             BotId=bot_id,
             GroupId=None,
@@ -328,8 +335,11 @@ async def main() -> int:
                     help=f"用例：{', '.join(ALL_ORDER)}，或 all 跑全部（默认 recent）")
     ap.add_argument("--token", default=DEFAULT_TOKEN,
                     help="yuyuko API token（默认用内置的公开 token；也可用环境变量 WOWS_TOKEN 覆盖）")
-    ap.add_argument("--platform-id", default=DEFAULT_ACCOUNT_ID,
-                    help="平台用户 ID（QQ 号）。不传 --nickname 时用它走「查自己」，需该用户已绑定")
+    ap.add_argument("--platform-id", default=DEFAULT_PLATFORM_ID,
+                    help="平台侧用户 ID（QQ 号，如 2622749113）。不传 --nickname 时用它走「查自己」，"
+                         "需该平台用户已绑定游戏账号。注意：**不是**游戏 accountId")
+    ap.add_argument("--platform", default=DEFAULT_PLATFORM,
+                    help="平台类型（默认 QQ；对应 AstrBot 的 aiocqhttp 适配器）")
     ap.add_argument("--nickname", default=None,
                     help="游戏昵称：给了就走「服务器+昵称」查询，不需要绑定，推荐排查提取问题时用")
     ap.add_argument("--server", default="asia",
@@ -342,7 +352,8 @@ async def main() -> int:
     ap.add_argument("--raw-only", action="store_true", help="只打印原始数据，不做提取")
     args = ap.parse_args()
 
-    platform_id = args.platform_id or args.account_id
+    platform_id = args.platform_id
+    platform = args.platform
 
     use_fixture = bool(args.fixture)
     if not use_fixture and not args.token:
@@ -395,6 +406,7 @@ async def main() -> int:
                 save_path=save_path if i == 0 else None,
                 raw_only=args.raw_only,
                 fixture=fixture,
+                platform=platform,
             )
         except Exception:
             import traceback
