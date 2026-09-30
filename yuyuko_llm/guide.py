@@ -6,6 +6,8 @@
 2. **限流**：LLM 可能被引导反复调用工具（刷屏 / 打爆上游接口），按会话限制频率。
 3. **话术**：把 hikari 的机读错误（如「请先绑定」）换成给模型的**行动指引**
    （比如引导用户去绑定），而不是让模型把原始报错念给用户。
+   故障还分了「网络波动（提示重试）」与「程序异常（引导加群反馈）」两类，
+   见 :func:`classify_error`。
 """
 
 from __future__ import annotations
@@ -15,9 +17,23 @@ from collections import defaultdict, deque
 
 from astrbot.api import logger
 
-from .tool_spec import BIND_GUIDE, UNBOUND_MARKERS
+from .tool_spec import (
+    BIND_GUIDE,
+    EXCEPTION_GUIDE,
+    NETWORK_GUIDE,
+    UNBOUND_MARKERS,
+    USER_EXCEPTION_TEXT,
+    USER_NETWORK_TEXT,
+)
 
-__all__ = ["ToolGuard", "humanize_error"]
+__all__ = [
+    "ERROR_EXCEPTION",
+    "ERROR_NETWORK",
+    "ToolGuard",
+    "classify_error",
+    "humanize_error",
+    "user_error_text",
+]
 
 
 # ===========================================================================
@@ -109,11 +125,18 @@ _ERROR_GUIDES: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 
-def humanize_error(message: str) -> str:
+def humanize_error(message: str, kind: str = "") -> str:
     """把机读错误换成给模型的行动指引；识别不了就原样返回。
+
+    先按 ``kind`` 分流出「程序异常 / 网络波动」这两类**与业务无关**的故障
+    （见 :func:`classify_error`），再走业务错误的话术表。
 
     刻意保留原文：模型拿到模糊错误时仍能如实转述，不会因为这里没登记就丢信息。
     """
+    if kind == ERROR_EXCEPTION:
+        return EXCEPTION_GUIDE
+    if kind == ERROR_NETWORK:
+        return NETWORK_GUIDE
     if not message:
         return "查询没有返回内容，请稍后重试。"
     text = str(message)
@@ -121,6 +144,81 @@ def humanize_error(message: str) -> str:
         if any(marker in text for marker in markers):
             return f"{guide}\n（原始提示：{text}）"
     return text
+
+
+# ===========================================================================
+# 故障分类
+#
+# 为什么要把「网络波动」和「程序异常」分开：
+#   · 网络问题让用户重试就够了，是预期内的；
+#   · 程序异常（我们自己的 bug）用户重试多少次都没用，必须让作者知道 ——
+#     这类如果笼统回一句「请稍后重试」，用户会一直白试，问题也永远暴露不出来。
+# ===========================================================================
+
+ERROR_NETWORK = "network"
+ERROR_EXCEPTION = "exception"
+
+# 网络类异常的类名（第三方库各写各的，按名字与模块名兜底判定）
+_NETWORK_ERROR_CLASSES = frozenset({
+    "TimeoutError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
+    "ConnectError", "ReadError", "WriteError", "RemoteProtocolError",
+    "ConnectionError", "ConnectionResetError", "ConnectionAbortedError",
+    "ConnectionRefusedError", "NetworkError", "NetworkUnreachable",
+    "SSLError", "SSLZeroReturnError", "ProxyError", "ClosedResourceError",
+})
+
+# 异常信息来源与超时的第三方模块（openai / httpx / httpcore 等）
+_NETWORK_ERROR_MODULES = ("httpx", "httpcore", "http.client", "aiohttp", "openai", "urllib3", "requests")
+
+# 消息里出现这些词也按网络类处理
+_NETWORK_KEYWORDS = (
+    "timeout", "timed out", "超时",
+    "connection", "连接",
+    "temporary failure in name resolution", "name or service not known",
+    "network", "网络",
+    "ssl", "proxy",
+    "502", "503", "504",
+    "server disconnected", "remotedisconnected",
+    "远程主机强迫关闭", "对方主机", "10054", "10060",
+    "max retries exceeded",
+)
+
+
+def classify_error(exc: BaseException) -> str:
+    """把异常归类成 :data:`ERROR_NETWORK` 或 :data:`ERROR_EXCEPTION`。"""
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        # OSError 覆盖了各种 socket 层错误（含 WinError 10054/10060）
+        return ERROR_NETWORK
+
+    # 上游 5xx：是服务端暂时不可用，让用户重试；4xx 多半是请求本身有问题，按其他错误走
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int) and status >= 500:
+        return ERROR_NETWORK
+
+    module = (type(exc).__module__ or "").lower()
+    name = type(exc).__name__
+    if name in _NETWORK_ERROR_CLASSES:
+        return ERROR_NETWORK
+
+    # 消息里的网络特征优先判定：像 httpx.HTTPStatusError 这类名字里不带
+    # timeout/connect 的，只能靠正文里的 "503" / "connection" 之类识别
+    text = str(exc).lower()
+    if any(keyword in text for keyword in _NETWORK_KEYWORDS):
+        return ERROR_NETWORK
+
+    if any(module.startswith(m) for m in _NETWORK_ERROR_MODULES):
+        # 传输层库抛出的其余异常：名字里有网络特征才算网络类，否则是我们自己用错了
+        if any(word in name.lower() for word in ("timeout", "connect", "network", "ssl", "proxy")):
+            return ERROR_NETWORK
+        return ERROR_EXCEPTION
+    return ERROR_EXCEPTION
+
+
+def user_error_text(kind: str) -> str:
+    """给用户的兜底文案（模型没照做时由插件直接说）。"""
+    if kind == ERROR_EXCEPTION:
+        return USER_EXCEPTION_TEXT
+    return USER_NETWORK_TEXT
 
 
 # ===========================================================================

@@ -14,6 +14,7 @@ AstrBot 通过 `main.py` 发现插件：它按 `data.plugins.<插件目录>.main
 """
 
 import asyncio
+import functools
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter, AstrMessageEvent
@@ -43,6 +44,7 @@ from .yuyuko_bot import (
 from hikari_core import Hikari_Model, callback_hikari, init_hikari  # noqa: E402
 from .yuyuko_llm import (  # noqa: E402
     COMMAND_BUILDERS,
+    ERROR_EXCEPTION,
     ToolExecutor,
     ToolGuard,
     build_account_command,
@@ -53,6 +55,8 @@ from .yuyuko_llm import (  # noqa: E402
     build_ship_command,
     build_ship_recent_command,
     build_ships_command,
+    classify_error,
+    user_error_text,
 )
 
 COMMAND = "wws"
@@ -64,6 +68,39 @@ PLATFORM_MAP = {
 
 # 近期查询的天数上限（防止模型填 99999 把上游拖死）
 MAX_RECENT_DAYS = 90
+
+
+def tool_guard(func):
+    """LLM 工具的最外层兜底：绝不把异常抛给框架。
+
+    ▍为什么必须有这一层
+    AstrBot 的 ``call_local_llm_tool`` 会把工具抛出的异常包成
+    ``Exception(f"Tool execution error: {e}. Traceback: {trace_}")`` 直接回给模型
+    （见 ``astrbot/core/astr_agent_tool_exec.py``）。那意味着模型会看到一大段
+    英文堆栈，然后照着重述给用户 —— 用户只会更困惑。
+
+    所以这里自己接住：按故障类型给出**行动指引**，让模型说人话。
+
+    用 ``functools.wraps`` 保留原签名与 docstring：``@llm_tool`` 是靠 docstring
+    生成参数 schema 的，签名丢了工具参数就会变空。
+    """
+
+    @functools.wraps(func)
+    async def wrapper(self, event, *args, **kwargs):
+        try:
+            return await func(self, event, *args, **kwargs)
+        except Exception as e:
+            kind = classify_error(e)
+            message = f"LLM 工具 {func.__name__} 执行异常（{kind}）: {e!r}"
+            # 程序异常按 error 记（要排查），网络类按 warning 记（可重试）。
+            # 注意 AstrBot 的 logger.log 要整数级别，别传 "error" 这样的字符串。
+            if kind == ERROR_EXCEPTION:
+                logger.error(message, exc_info=True)
+            else:
+                logger.warning(message)
+            return user_error_text(kind)
+
+    return wrapper
 
 
 def _platform_of(event: AstrMessageEvent) -> str | None:
@@ -210,6 +247,7 @@ class WowsYuyuko(Star):
     # =======================================================================
 
     @llm_tool(name="wws_account")
+    @tool_guard
     async def wws_account(
         self,
         event: AstrMessageEvent,
@@ -232,6 +270,7 @@ class WowsYuyuko(Star):
         )
 
     @llm_tool(name="wws_ship")
+    @tool_guard
     async def wws_ship(
         self,
         event: AstrMessageEvent,
@@ -255,6 +294,7 @@ class WowsYuyuko(Star):
         )
 
     @llm_tool(name="wws_recent")
+    @tool_guard
     async def wws_recent(
         self,
         event: AstrMessageEvent,
@@ -284,6 +324,7 @@ class WowsYuyuko(Star):
         )
 
     @llm_tool(name="wws_recent_random")
+    @tool_guard
     async def wws_recent_random(
         self,
         event: AstrMessageEvent,
@@ -308,6 +349,7 @@ class WowsYuyuko(Star):
         return await self.tools.execute(event, command, "recent", "wws_recent_random")
 
     @llm_tool(name="wws_recent_rank")
+    @tool_guard
     async def wws_recent_rank(
         self,
         event: AstrMessageEvent,
@@ -331,6 +373,7 @@ class WowsYuyuko(Star):
         return await self.tools.execute(event, command, "recent", "wws_recent_rank")
 
     @llm_tool(name="wws_ship_recent")
+    @tool_guard
     async def wws_ship_recent(
         self,
         event: AstrMessageEvent,
@@ -355,6 +398,7 @@ class WowsYuyuko(Star):
         return await self.tools.execute(event, command, "recent", "wws_ship_recent")
 
     @llm_tool(name="wws_recent_battles")
+    @tool_guard
     async def wws_recent_battles(
         self,
         event: AstrMessageEvent,
@@ -377,6 +421,7 @@ class WowsYuyuko(Star):
         )
 
     @llm_tool(name="wws_ships")
+    @tool_guard
     async def wws_ships(
         self,
         event: AstrMessageEvent,
@@ -411,6 +456,7 @@ class WowsYuyuko(Star):
         )
 
     @llm_tool(name="wws_roll_ship")
+    @tool_guard
     async def wws_roll_ship(
         self,
         event: AstrMessageEvent,
@@ -433,6 +479,7 @@ class WowsYuyuko(Star):
         )
 
     @llm_tool(name="wws_bind")
+    @tool_guard
     async def wws_bind(
         self,
         event: AstrMessageEvent,
@@ -456,6 +503,7 @@ class WowsYuyuko(Star):
         )
 
     @llm_tool(name="wws_bind_list")
+    @tool_guard
     async def wws_bind_list(self, event: AstrMessageEvent) -> str:
         """查询当前用户已经绑定了哪些游戏账号。
 
@@ -466,6 +514,7 @@ class WowsYuyuko(Star):
         )
 
     @llm_tool(name="wws_bind_change")
+    @tool_guard
     async def wws_bind_change(
         self,
         event: AstrMessageEvent,

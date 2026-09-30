@@ -119,15 +119,32 @@ class BattleStatsExtractor:
 
     # ---------------------------------------------------------------- 战斗统计
 
+    # ▍各模式统计所在节点的候选键名。
+    # **这不是冗余**：不同接口用的键不一样 ——
+    #   近期 / 总表（wws-info-*.html）用 ``battleTypeInfo``
+    #   单船（wws-ship-v6.html）、筛选列表里的每条船用 ``typeInfo``
+    # 只认一个键会让另一边的模式数据读成空（表现为「模型说没有数据」）。
+    BATTLE_NODE_KEYS: tuple[str, ...] = ("battleTypeInfo", "typeInfo")
+
+    @classmethod
+    def _battle_node(cls, data: Any) -> dict:
+        """取出承载各模式统计的节点（兼容 battleTypeInfo / typeInfo）。"""
+        if not isinstance(data, dict):
+            return {}
+        for key in cls.BATTLE_NODE_KEYS:
+            node = data.get(key)
+            if isinstance(node, dict) and node:
+                return node
+        return {}
+
     @classmethod
     def battle_modes_present(cls, data: Any) -> list[str]:
         """数据里实际有场次的模式（按 MODE_ORDER 排序）。
 
-        「有场次」= ``battleTypeInfo.<模式>.battle`` 大于 0；
-        模板也是靠这个值决定要不要渲染那一段。
+        「有场次」= ``<节点>.<模式>.battle`` 大于 0；模板也是靠这个值决定要不要渲染。
         """
-        info = cls._dig(data, ("battleTypeInfo",)) or {}
-        if not isinstance(info, dict):
+        info = cls._battle_node(data)
+        if not info:
             return []
         present = [
             mode
@@ -145,7 +162,7 @@ class BattleStatsExtractor:
     @classmethod
     def battle_stats(cls, data: Any, mode: str) -> dict[str, Any] | None:
         """单个模式的统计数据；该模式没有场次时返回 None。"""
-        payload = cls._dig(data, ("battleTypeInfo", mode))
+        payload = cls._battle_node(data).get(mode)
         if not isinstance(payload, dict):
             return None
         if (payload.get("battle") or 0) <= 0:
@@ -160,10 +177,10 @@ class BattleStatsExtractor:
 
     @classmethod
     def battle_types(cls, data: Any, only: str | None = None) -> dict[str, Any]:
-        """近期战绩的各模式统计。
+        """各模式统计（近期 / 总表 / 单船共用）。
 
         Args:
-            data: hikari 的 ``Output.Data``
+            data: hikari 的 ``Output.Data``（节点名 battleTypeInfo 或 typeInfo 都认）
             only: 只要这一个模式（None = 全部有场次的模式，即「默认全给」）
         """
         if only:
@@ -336,10 +353,11 @@ class BattleStatsExtractor:
             if value is not None:
                 row[out_key] = value
 
-        nested = cls._pick_loose(item, ("typeInfo", "battleTypeInfo"))
+        # 统计优先从嵌套节点取（typeInfo / battleTypeInfo 都认），
+        # 取不到再退回摊平在记录自身上的字段
         stats: dict[str, Any] = {}
-        if isinstance(nested, dict):
-            stats = cls.battle_stats({"battleTypeInfo": nested}, "PVP") or {}
+        if isinstance(item, dict):
+            stats = cls.battle_stats(item, "PVP") or {}
         if not stats:
             stats = cls._pick(item, cls.BATTLE_FIELDS)
         for key, candidates in cls.ROW_STAT_CANDIDATES.items():
@@ -380,11 +398,98 @@ class BattleStatsExtractor:
         rows.sort(key=lambda r: r.get("battles") or 0, reverse=True)
         return rows[:limit]
 
+    # ---------------------------------------------------------------- 账号绑定
+
+    @classmethod
+    def bind_list_summary(cls, data: Any) -> dict[str, Any]:
+        """绑定列表：把上游结构压成模型能直接用的精简列表。
+
+        上游每条记录的字段是 ``{accountId, userName, server, defaultAccount}``
+        （见 ``features/bind.py`` 的 ``get_BindInfo``，模板 bind-list-v6.html 也是读这几个）。
+
+        ▍为什么要在这里加工，而不是原样丢给模型
+        - **序号**：``change_bind`` / ``delete_bind`` 都按序号取账号
+          （``Select_Data[Select_Index-1]['accountId']``），而序号只存在于**列表顺序**里，
+          记录本身没有这个字段。所以必须显式生成，模型才知道该回哪个序号。
+        - **服务器**：上游给的是 ``asia`` / ``cn`` 这类代码，模板靠前端 JS 才显示成中文，
+          Python 侧拿到的是代码。不转成中文，模型转述给用户时就只能说 "asia"。
+        - **当前账号**：靠 ``defaultAccount == accountId`` 判定（模板同款逻辑），
+          模型据此回答「我现在绑的是哪个」。
+        """
+        accounts = []
+        for index, item in enumerate(cls._bind_items(data), start=1):
+            if not isinstance(item, dict):
+                continue
+            account_id = cls._pick_loose(item, ("accountId", "aid", "id"))
+            default_mark = cls._pick_loose(item, ("defaultAccount", "defaultId", "default"))
+            row: dict[str, Any] = {"index": index}
+            if account_id is not None:
+                row["account_id"] = account_id
+            name = cls._pick_loose(item, ("userName", "nickName", "name"))
+            if name is not None:
+                row["user_name"] = name
+            server = cls._pick_loose(item, ("server", "serverName"))
+            if server is not None:
+                row["server"] = server
+                row["server_cn"] = _server_cn(server)
+            # defaultAccount 与 accountId 相等即为当前绑定账号（模板同款判定）
+            is_current = bool(
+                default_mark is not None
+                and account_id is not None
+                and str(default_mark) == str(account_id)
+            )
+            # defaultId 是布尔标记时的兼容分支
+            if not is_current and isinstance(default_mark, bool) and default_mark:
+                is_current = True
+            row["is_current"] = is_current
+            accounts.append(row)
+        return {"count": len(accounts), "accounts": accounts}
+
+    @staticmethod
+    def _bind_items(data: Any) -> list:
+        """取出绑定记录列表；兼容「裸列表」与「包了一层键」两种返回形状。"""
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("bindList", "data", "list", "records"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return value
+        return []
+
+    @classmethod
+    def bind_result(cls, data: Any) -> Any:
+        """绑定 / 切换 / 删除的返回：可能是字符串消息，也可能是绑定列表。
+
+        - 字符串（"绑定成功" / "切换绑定成功，当前绑定账号…"）→ 直接给模型这句话
+        - 列表 / 字典 → 走 :meth:`bind_list_summary`
+        """
+        if isinstance(data, str):
+            return data
+        if isinstance(data, (list, dict)):
+            return cls.bind_list_summary(data)
+        return data
+
+
+# 服务器代码 -> 中文（与模板 bind-list-v6.html 里那段 JS 的映射保持一致）
+_SERVER_CN = {
+    "asia": "亚服",
+    "cn": "国服",
+    "eu": "欧服",
+    "na": "美服",
+    "ru": "俄服",
+}
+
+
+def _server_cn(server: Any) -> str:
+    """把服务器代码转成中文；已经是中文（或认不出来）就原样返回。"""
+    text = str(server).strip()
+    return _SERVER_CN.get(text.lower(), text)
+
 
 # ---------------------------------------------------------------------------
 # 模式别名容错
 # ---------------------------------------------------------------------------
-
 # ▍为什么要有别名表
 # ``@llm_tool`` 装饰器生成 schema 时只支持 type / name / description 三个字段
 # （见 astrbot/core/star/register/star_handler.py 的 register_llm_tool），

@@ -1,13 +1,19 @@
 """LLM 工具的共享执行流程。
 
 每个工具在 ``main.py`` 里只是一个薄壳（因为 ``@llm_tool`` 必须定义在那里），
-真正的流程在这里，避免 11 份重复代码：
+真正的流程在这里，避免 12 份重复代码：
 
     限流检查 -> 查询（不渲染） -> 渲染发图给用户 -> 返回精简数据给 LLM
 
 ▍关于「发图给用户 + 给 LLM 文字」
 图片对模型没有价值，但用户喜欢现有的排版。所以两边各拿各的：
 用户收到和 ``wws`` 指令一模一样的渲染图，模型收到提取后的字段用来点评。
+
+▍关于故障话术
+返回给模型的是**行动指引**而非原始报错：网络波动让它提示重试，
+程序异常让它引导用户加群反馈（见 ``guide.classify_error``）。
+原因是这两类对用户的意义完全不同 —— 程序异常重试多少次都没用，
+笼统回一句「稍后重试」只会让用户白试，问题也永远暴露不出来。
 """
 
 from __future__ import annotations
@@ -17,14 +23,28 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .guide import ToolGuard, config_get_bool, humanize_error
+from .guide import (
+    ERROR_EXCEPTION,
+    ERROR_NETWORK,
+    ToolGuard,
+    classify_error,
+    config_get_bool,
+    humanize_error,
+)
 from .query import QueryResult, QueryRunner
+from .tool_spec import IMAGE_FAILED_GUIDE, SERVER_CODE_HINT
 
 __all__ = ["ToolExecutor"]
 
 
 # 模型侧文本的上限：数据本身不大，但异常情况下兜一下，避免把 prompt 撑爆
 MAX_PAYLOAD_CHARS = 6000
+
+# 图片发送失败、但数据本身可用时，给模型的简要数据上限
+MAX_FALLBACK_CHARS = 600
+
+# 兜底文案：插件直接说，不依赖模型转述
+FALLBACK_IMAGE_FAILED = "图片没发出去，可能是网络抖动，稍后再试一次哦~"
 
 
 class ToolExecutor:
@@ -108,30 +128,119 @@ class ToolExecutor:
             return self._format_error(result)
 
         # 7) 渲染发图：和 wws 指令走同一套渲染与发送逻辑
+        image_failed = False
         if send_image:
-            await self._send_rendered(runner, result, event)
+            image_failed = await self._send_rendered(runner, result, event)
 
-        return self._format_payload(extractor, result)
+        payload_text = self._format_payload(extractor, result, image_failed=image_failed)
+        return payload_text
 
-    async def _send_rendered(self, runner: QueryRunner, result: QueryResult, event) -> None:
-        """渲染并发送图片；失败只记日志，不影响给模型的文本。"""
+    async def _send_rendered(self, runner: QueryRunner, result: QueryResult, event) -> bool:
+        """渲染并发送图片。
+
+        Returns:
+            bool: 图片是否**本应发出去但失败了**。
+
+            刻意区分「没有图片」和「发图失败」：
+            ``Output.Data`` 不是 bytes 时（例如模板只回了字符串、或渲染产出了
+            HTML 而非位图）属于**正常情况**，不该报错；只有真的尝试发送却出错，
+            才算失败。否则会把正常路径误报成故障。
+        """
         try:
             async with self._runtime.render_lock:
                 data = await runner.render(result)
-            if not data:
-                return
-            await self._sender.send_bytes(event, result.hikari, data)
         except Exception as e:
-            logger.warning(f"LLM 工具发送图片失败: {e}")
+            logger.exception(f"LLM 工具渲染图片失败: {e}")
+            self._log_failure("渲染", e)
+            return True
+
+        if not data:
+            # 本轮没有图片产物：不是故障，交给模型用文字作答即可
+            logger.debug("LLM 工具本轮没有图片产物，按文本处理")
+            return False
+
+        try:
+            await self._sender.send_bytes(event, result.hikari, data)
+            return False
+        except Exception as e:
+            logger.exception(f"LLM 工具发送图片失败: {e}")
+            self._log_failure("发送", e)
+            return True
+
+    @staticmethod
+    def _log_failure(stage: str, exc: BaseException) -> None:
+        """按故障类型记不同级别，便于线上快速区分「我们的 bug」和「网络抖动」。"""
+        if classify_error(exc) == ERROR_EXCEPTION:
+            logger.error(f"LLM 工具{stage}图片失败（程序异常，需要排查）: {exc!r}")
+        else:
+            logger.warning(f"LLM 工具{stage}图片失败（网络类，可重试）: {exc!r}")
 
     @staticmethod
     def _format_error(result: QueryResult) -> str:
-        """失败信息交给话术层换成行动指引。"""
-        return humanize_error(result.message)
+        """失败信息交给话术层换成行动指引。
 
-    def _format_payload(self, extractor: str, result: QueryResult) -> str:
+        ``network`` / ``exception`` 两类**不把原始报错交给模型** ——
+        那些是给开发者看的堆栈与英文异常，转述给用户毫无意义还容易吓人。
+        """
+        if result.error_kind in (ERROR_NETWORK, ERROR_EXCEPTION):
+            return humanize_error("", result.error_kind)
+        return humanize_error(result.message, result.error_kind)
+
+    @staticmethod
+    def _log_extracted(extractor: str, payload: Any) -> None:
+        """把提取结果打到日志，便于核对「到底提取到了什么」。
+
+        排查时最有用的一条：抽取出来是空的（``EMPTY``）说明字段路径跟上游对不上，
+        而不是上游没数据 —— 这两种情况从用户侧看到的都是「没有数据」。
+
+        全程 try/except：日志绝不能因为它自己出错而影响业务；中文用
+        ``ensure_ascii=False`` 保留可读性，失败再退回 ``str()``。
+        """
+        try:
+            if isinstance(payload, str):
+                summary = f"str({len(payload)}字)"
+            elif isinstance(payload, dict):
+                summary = f"dict, {len(payload)} 个键: {list(payload)[:12]}"
+            elif isinstance(payload, list):
+                summary = f"list, {len(payload)} 项"
+            else:
+                summary = type(payload).__name__
+
+            # 判断「有没有真的提到东西」：空 dict/空列表/空串都算没提到
+            empty = payload is None or payload == {} or payload == [] or payload == ""
+            try:
+                text = json.dumps(payload, ensure_ascii=False, default=str)
+            except Exception:
+                text = str(payload)
+            if len(text) > 4000:
+                text = text[:4000] + f"…（共 {len(text)} 字符，已截断）"
+
+            logger.info(
+                f"[战绩提取] 类型={extractor} 结果={'EMPTY' if empty else summary}\n{text}"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[战绩提取] 日志输出失败: {e!r}")
+
+    def _format_payload(
+        self,
+        extractor: str,
+        result: QueryResult,
+        *,
+        image_failed: bool = False,
+    ) -> str:
         """把提取结果压成给模型的文本。"""
-        payload = result.data or {}
+        payload = result.data
+        self._log_extracted(extractor, payload)
+
+        # 字符串结果（如「绑定成功」「切换绑定成功，当前绑定账号…」）：直接转达即可，
+        # 不必包成 JSON，否则模型容易把简单消息读成结构化数据再啰嗦一遍
+        if isinstance(payload, str):
+            text = payload.strip()
+            if not text:
+                return "操作已完成，但没有返回可读信息，请如实告知用户。"
+            head = f"操作已成功，以下是系统返回的原话，请自然地向用户转述。{SERVER_CODE_HINT}\n"
+            return head + self._clip(text, MAX_PAYLOAD_CHARS)
+
         if not payload:
             return "查询成功，但没有提取到可读数据（可能是该账号在该条件下没有记录），请如实告知用户。"
 
@@ -139,6 +248,16 @@ class ToolExecutor:
             text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         except (TypeError, ValueError):
             text = str(payload)
+
+        if image_failed:
+            # 图片没发出去，只能靠模型用文字把结论讲清楚，所以数据要留够
+            return (
+                f"{IMAGE_FAILED_GUIDE}\n"
+                f"（图片发送失败时，请直接用文字回答用户，不要提「数据」「JSON」这类字眼，"
+                f"就像正常汇报战绩那样说话。另需向用户致歉说明图片没发出来。）\n"
+                f"{self._clip(text, MAX_PAYLOAD_CHARS)}"
+            )
+
         if len(text) > MAX_PAYLOAD_CHARS:
             text = text[:MAX_PAYLOAD_CHARS] + "…（数据过长已截断）"
 
@@ -147,6 +266,10 @@ class ToolExecutor:
             head += "，并用自然的语气点评一下玩家的表现（水平、风格、亮点或不足）"
         head += "。图片已经发给用户了，不需要再把数据罗列一遍。\n\n"
         return head + text
+
+    @staticmethod
+    def _clip(text: str, limit: int) -> str:
+        return text if len(text) <= limit else text[:limit] + "…（已截断）"
 
     def _evaluate_enabled(self) -> bool:
         """评价开关；关掉时只让模型转述数据，不引导点评。"""

@@ -21,6 +21,7 @@ from astrbot.api import logger
 from hikari_core import Hikari_Model, callback_hikari, init_hikari_no_output, output_hikari
 
 from .extract import BattleStatsExtractor, normalize_battle_mode
+from .guide import classify_error
 
 __all__ = [
     "QueryRunner",
@@ -200,14 +201,16 @@ class QueryResult:
         hikari: 原始 Hikari_Model，调用方据此渲染发图
         select_options: 需要用户二次选择时的候选列表
         need_select: 是否在等选择
+        error_kind: 故障分类（network / exception），仅异常路径会有值
     """
 
     ok: bool = False
-    data: dict[str, Any] = field(default_factory=dict)
+    data: Any = field(default_factory=dict)
     message: str = ""
     hikari: Hikari_Model | None = None
     select_options: list = field(default_factory=list)
     need_select: bool = False
+    error_kind: str = ""
 
 
 class QueryRunner:
@@ -271,7 +274,10 @@ class QueryRunner:
             return result
         except Exception as e:
             logger.exception(f"LLM 工具查询异常: {e}")
-            result.message = "查询时发生异常，请稍后重试"
+            # 分类交给上层决定话术：网络波动提示重试，程序异常引导加群反馈
+            result.ok = False
+            result.error_kind = classify_error(e)
+            result.message = str(e) or type(e).__name__
             return result
 
     async def render(self, result: QueryResult) -> bytes | None:
@@ -314,7 +320,7 @@ class QueryRunner:
     @staticmethod
     def _extract(
         extractor: str, raw: Any, *, only: str | None = None, **kwargs: Any
-    ) -> dict[str, Any]:
+    ) -> Any:
         """按名字调用提取器；未知名字返回空 dict 而不是抛异常。"""
         ext = BattleStatsExtractor
         if extractor == "account":
@@ -330,8 +336,9 @@ class QueryRunner:
         if extractor == "roll":
             return ext.roll_summary(raw)
         if extractor == "bind":
-            # 绑定类接口返回的形状不固定，原样交给 LLM 读
-            return raw if isinstance(raw, dict) else {}
+            # 绑定类接口的返回有三种：绑定列表 / 「绑定成功」这类消息 / 其它结构，
+            # 统一交给 bind_result 归一化（字符串就直接用，列表就压成精简账号表）
+            return ext.bind_result(raw)
         return {}
 
 
