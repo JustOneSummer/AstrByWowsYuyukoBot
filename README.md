@@ -46,6 +46,14 @@ yuyuko_bot/
 添加配置项的流程：`_conf_schema.json` 加字段 → `yuyuko_bot/config.py` 的
 `build_hikari_config()` 里映射 → `yuyuko_bot/runtime.py` 负责下发。
 
+> ⚠️ `metadata.yaml` 的 `name` **必须是合法的 Python 标识符**（只能有字母、数字、下划线，
+> 不能有 `-`、空格，也不能是 Python 关键字）。AstrBot 安装插件时会把 `name` 直接当作
+> 安装目录名（`data/plugins/<name>`），再以 `data.plugins.<name>.main` 去 import；
+> 名字不合法会直接安装失败：
+> `metadata 文件中 name 不是合法的模块名称（应为合法 Python 标识符且非关键字）`。
+> 目前取 `astrbot_plugin_wows_yuyuko`；面向用户展示的名字放在 `display_name` 里。
+> 推而广之，**仓库/安装目录名本身也应是合法标识符**。
+
 暂时仅支持 QQ 个人，频道版本后续支持。
 
 ## 指令

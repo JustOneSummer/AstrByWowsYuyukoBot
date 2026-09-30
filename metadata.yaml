@@ -1,4 +1,4 @@
-name: astrbot_plugin_wows-yuyuko
+name: astrbot_plugin_wows_yuyuko
 display_name: 战舰世界-Yuyuko
 desc: 战舰世界战绩查询机器人（内置 Hikari-core-v2）
 version: v0.1.0
