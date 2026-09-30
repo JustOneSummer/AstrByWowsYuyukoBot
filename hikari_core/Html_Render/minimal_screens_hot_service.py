@@ -44,8 +44,13 @@ class minimal_screens_hot_service:
     @classmethod
     async def get_instance(cls):
         if cls._instance is None:
-            cls._instance = minimal_screens_hot_service()
-            await cls._instance.start()
+            instance = minimal_screens_hot_service()
+            try:
+                await instance.start()
+            except Exception:
+                # 重置单例，免得后续查询拿到 browser=None 的半成品
+                cls._instance = None
+                raise
         return cls._instance
 
     def __init__(self):
@@ -63,17 +68,38 @@ class minimal_screens_hot_service:
         self.request_count = 0
 
     async def start(self):
+        """启动 Playwright 与浏览器内核；失败直接抛错，不留 browser=None 的半成品。"""
         from hikari_core.core.config import hikari_config
-        """极速启动浏览器 - 优化启动参数"""
         self.user_browser = hikari_config.use_broswer
         self.playwright = await async_playwright().start()
-        if hikari_config.use_broswer == 'chromium':
-            await self.chromium()
-        else:
-            await self.firefox()
+        try:
+            if hikari_config.use_broswer == 'chromium':
+                ok = await self.chromium()
+            else:
+                ok = await self.firefox()
+        except Exception:
+            await self._stop_playwright()
+            raise
+        if not ok or self.browser is None:
+            await self._stop_playwright()
+            raise RuntimeError(
+                f"浏览器（{hikari_config.use_broswer}）启动失败，请检查 Playwright 浏览器内核"
+            )
+
+    async def _stop_playwright(self):
+        """停掉 Playwright，忽略关闭过程中的异常。"""
+        if self.playwright is not None:
+            try:
+                await self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
 
     async def chromium(self):
         browser_path = minimal_screens_hot_service.setup_playwright(browser="chromium")
+        if not browser_path:
+            logger.error("未找到可用的 chromium 内核（Playwright 安装失败），跳过启动")
+            return False
         logger.info(f"使用浏览器: {browser_path}")
         try:
             start_time = time.time()
@@ -131,6 +157,9 @@ class minimal_screens_hot_service:
         start_time = time.time()
         # 使用最小的启动参数
         browser_path = minimal_screens_hot_service.setup_playwright(browser="firefox")
+        if not browser_path:
+            logger.error("未找到可用的 firefox 内核（Playwright 安装失败），跳过启动")
+            return False
         try:
             logger.info(f"使用浏览器: {browser_path}")
             self.browser = await self.playwright.firefox.launch(
@@ -179,11 +208,11 @@ class minimal_screens_hot_service:
                 if not page.is_closed():
                     # 快速重置页面（同时重置图片追踪标志，确保新页面背景图能被追踪）
                     await page.evaluate("""
-                        document.body.innerHTML = '';
-                        window.__bg_images_tracked = false;
-                        window.__images_total = 0;
-                        window.__images_loaded = 0;
-                    """)
+                                        document.body.innerHTML = '';
+                                        window.__bg_images_tracked = false;
+                                        window.__images_total = 0;
+                                        window.__images_loaded = 0;
+                                        """)
                     return page
             except:
                 del self.context_pages[session_id]
@@ -397,10 +426,10 @@ class minimal_screens_hot_service:
             # 强制 reflow
             # =========================
             await page.evaluate("""
-                            () => {
-                                document.body.offsetHeight;
-                            }
-                            """)
+                                () => {
+                                    document.body.offsetHeight;
+                                }
+                                """)
             load_time = time.time() - load_start
             logger.debug(f"页面加载: {load_time:.2f}s")
 
@@ -432,14 +461,14 @@ class minimal_screens_hot_service:
             # 解决半渲染 / 背景图未上屏问题
             # =========================
             await page.evaluate("""
-                            () => new Promise(resolve => {
-                                requestAnimationFrame(() => {
+                                () => new Promise(resolve => {
                                     requestAnimationFrame(() => {
-                                        resolve();
+                                        requestAnimationFrame(() => {
+                                            resolve();
+                                        });
                                     });
-                                });
-                            })
-                            """)
+                                })
+                                """)
             await page.wait_for_timeout(100)
             # 5. 快速截图
             screenshot_start = time.time()
@@ -692,13 +721,14 @@ class minimal_screens_hot_service:
             except:
                 pass
             self.playwright = None
-        # 清理临时目录
+        # 只清截图临时文件、重置单例，保留已下载的浏览器内核
         try:
             for f in self.temp_dir.glob("temp_*.html"):
                 f.unlink()
         except:
             pass
-        logger.info("服务已关闭")
+        type(self)._instance = None
+        logger.info("截图服务已关闭（已保留 Playwright 浏览器内核）")
 
     async def _images_to_gif(self, image_files: List[str], fps: int) -> bytes:
 
@@ -755,62 +785,102 @@ class minimal_screens_hot_service:
         return ''
 
     @staticmethod
+    def _run_playwright_install(browser: str):
+        """用 Playwright 自带的 node driver 安装浏览器内核。
+        """
+        env = dict(os.environ)
+        try:
+            from playwright._impl._driver import (
+                compute_driver_executable,
+                get_driver_env,
+            )
+
+            node, cli = compute_driver_executable()
+            env.update(get_driver_env())
+            cmd = [node, cli, "install", browser]
+        except Exception as e:
+            logger.warning(f"获取 Playwright driver 失败（{e}），回退到 python -m playwright")
+            env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+            cmd = [sys.executable, "-m", "playwright", "install", browser]
+        env["PLAYWRIGHT_BROWSERS_PATH"] = str(get_cache_file() / "browsers")
+        env["PLAYWRIGHT_DOWNLOAD_HOST"] = "https://npmmirror.com/mirrors/playwright/"
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    @staticmethod
     def setup_playwright(browser: str = "chromium") -> str:
+        """准备浏览器内核，返回可执行文件路径（失败返回 None）。
+
+        只有确实找到可执行文件才写 .<browser>-env 标记，避免一次失败后永不重试。
         """
-        设置 Playwright 环境
-        """
-        install_deps = True
         # 1. 确定安装路径
         browsers_path = get_cache_file() / "browsers"
-        # 2. 创建目录
         browsers_path.mkdir(parents=True, exist_ok=True)
-        # 3. 版本匹配校验：缓存标记里需记录当前 playwright 期望的构建号，
-        #    升级 playwright 后标记过期 → 自动重新安装配套浏览器内核
-        expected_revision = minimal_screens_hot_service._expected_revision(browser)
         env_file = browsers_path / f".{browser}-env"
-        marker_ok = False
+        expected_revision = minimal_screens_hot_service._expected_revision(browser)
+
+        # 2. 快路径：标记匹配且内核真的在
         if env_file.exists():
             marker_text = env_file.read_text(encoding='utf-8', errors='ignore')
-            marker_ok = bool(expected_revision) and f"REVISION={expected_revision}" in marker_text
-            if not marker_ok:
+            marker_ok = (not expected_revision) or f"REVISION={expected_revision}" in marker_text
+            if marker_ok:
+                executable = minimal_screens_hot_service.find_executable(browser, browsers_path)
+                if executable:
+                    return executable
+                logger.info(f"缓存标记存在但内核缺失（{browsers_path}），重新安装 {browser}")
+            else:
                 logger.info(
                     f"检测到 Playwright 升级或标记过期（期望 {browser} 构建 {expected_revision or '未知'}），"
                     f"将重新安装 {browser}"
                 )
-                try:
-                    env_file.unlink()
-                except OSError:
-                    pass
-        if env_file.exists() and marker_ok:
-            return minimal_screens_hot_service.find_executable(browser, browsers_path)
-        with open(env_file, 'w', encoding='utf-8') as f:
-            f.write(f"PLAYWRIGHT_BROWSERS_PATH={browsers_path}\n")
-            f.write(f"REVISION={expected_revision}\n")
 
-        # 4. 临时设置环境变量
+        # 3. 安装到插件缓存目录
         os.environ['PLAYWRIGHT_DOWNLOAD_HOST'] = 'https://npmmirror.com/mirrors/playwright/'
         os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(browsers_path)
         logger.info(f"🎯 Playwright 浏览器将安装到: {browsers_path}")
-        # 5. 安装系统依赖（可选）
-        if install_deps and sys.platform != "win32":
+
+        # 4. 安装系统依赖（只有 Linux 需要）
+        if sys.platform != "win32":
             logger.info("正在安装系统依赖...")
-            subprocess.run(["playwright", "install-deps"], check=False)
-        # 7. 安装浏览器
+            try:
+                from playwright._impl._driver import (
+                    compute_driver_executable,
+                    get_driver_env,
+                )
+
+                node, cli = compute_driver_executable()
+                env = get_driver_env()
+                env["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
+                subprocess.run([node, cli, "install-deps"], check=False, env=env)
+            except Exception as e:
+                logger.debug(f"跳过 install-deps: {e}")
+
+        # 5. 安装浏览器
         logger.info(f"正在安装 {browser}...")
-        result = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", browser, "--with-deps"],
-            capture_output=True,
-            text=True,
-            env=os.environ
-        )
-        if result.returncode == 0:
-            logger.info(f"✅ {browser} 安装完成")
-        else:
-            logger.info(f"⚠️ {browser} 安装可能有问题: {result.stderr[:200]}")
-        # 8. 验证安装
-        logger.info("\n✅ 安装完成！")
-        logger.info(f"浏览器路径: {browsers_path}")
-        return minimal_screens_hot_service.find_executable(browser, browsers_path)
+        result = minimal_screens_hot_service._run_playwright_install(browser)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()[:500]
+            logger.error(f"❌ {browser} 安装失败（exit {result.returncode}）: {detail}")
+            try:
+                env_file.unlink()
+            except OSError:
+                pass
+            return None
+
+        # 6. 验证安装
+        executable = minimal_screens_hot_service.find_executable(browser, browsers_path)
+        if not executable:
+            logger.error(f"❌ {browser} 安装后仍未找到可执行文件: {browsers_path}")
+            try:
+                env_file.unlink()
+            except OSError:
+                pass
+            return None
+
+        with open(env_file, 'w', encoding='utf-8') as f:
+            f.write(f"PLAYWRIGHT_BROWSERS_PATH={browsers_path}\n")
+            f.write(f"REVISION={expected_revision}\n")
+        logger.info(f"✅ {browser} 安装完成: {executable}")
+        return executable
 
     @staticmethod
     def find_executable(browser_type: str = "chromium", browser_path: Path = None):

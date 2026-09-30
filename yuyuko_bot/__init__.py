@@ -15,23 +15,19 @@
 import sys
 from pathlib import Path
 
-# hikari_core v2 以「随仓库提交」的源码形式内置在插件目录下的 hikari_core/。
-# 为什么不用 git submodule：AstrBot 安装/更新插件走的是 GitHub 源码包
-# (archive/refs/heads/<branch>.zip)，压缩包里不含 submodule 内容，
-# 用户装完会拿到一个空的 hikari_core/ 而直接 ImportError。
-# 把外层目录挂进 sys.path，`from hikari_core import ...` 就能解析到这份内置源码，
-# 因此不再需要 pip 安装 hikari-core。
+# hikari_core 以「随仓库提交」的源码内置在插件目录下（AstrBot 的源码包不含
+# submodule，装完会是空的），把插件根目录挂进 sys.path 就能直接 import。
 _PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-_VENDORED_HIKARI_CORE = _PLUGIN_ROOT / "hikari_core"
-if (_VENDORED_HIKARI_CORE / "hikari_core" / "__init__.py").is_file():
-    if str(_VENDORED_HIKARI_CORE) not in sys.path:
-        sys.path.insert(0, str(_VENDORED_HIKARI_CORE))
+_HIKARI_CORE = _PLUGIN_ROOT / "hikari_core"
+if (_HIKARI_CORE / "__init__.py").is_file():
+    if str(_PLUGIN_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PLUGIN_ROOT))
 else:
     # 不在这里 raise：让报错停在真正用到的那个 import 上，同时先给一条能看懂的提示
     import warnings
 
     warnings.warn(
-        f"内置的 hikari-core 源码缺失或不完整（{_VENDORED_HIKARI_CORE}），"
+        f"内置的 hikari-core 源码缺失或不完整（{_HIKARI_CORE}），"
         "插件将无法工作。请重新安装/更新本插件（不要只拷贝单个 main.py）。",
         RuntimeWarning,
         stacklevel=2,
