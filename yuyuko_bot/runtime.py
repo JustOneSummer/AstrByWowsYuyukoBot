@@ -49,6 +49,7 @@ class CoreRuntime:
         set_hikari_config(**build_hikari_config(self._config))
         # set_hikari_config 内部已 initial_cache_file()，此时缓存目录才是配置后的那个
         get_temp_dir().mkdir(parents=True, exist_ok=True)
+        _prepare_browser()
 
     def is_ready(self) -> bool:
         """hikari-core 是否已经就绪（配置下发完成且没抛异常）。"""
@@ -59,11 +60,9 @@ class CoreRuntime:
 
     @staticmethod
     async def shutdown() -> None:
-        """停掉定时任务、关闭截图服务与浏览器进程、清掉渲染产物目录。
+        """停调度器、关浏览器，只清理截图产物。
 
-        对应 HikariBot-Official `start.py` 的 `on_shutdown`（调度器）+ 截图服务收尾：
-        v2 的截图服务是**惰性启动的单例浏览器**，插件卸载时不主动关，
-        Chromium 进程会一直挂在那儿。
+        删 file_img_temp/ 与 browser_temp/ 的临时 html；保留 browsers/ 与 ship_cache/。
         """
         _shutdown_scheduler()
         await _shutdown_browser()
@@ -81,7 +80,7 @@ def get_temp_dir():
 
 
 async def clean_temp_dir() -> None:
-    """删除渲染产物目录（不存在则跳过）。"""
+    """删除本插件的截图落盘目录（不存在则跳过）；不动 browsers / ship_cache。"""
     temp_dir = get_temp_dir()
     if temp_dir.is_dir():
         await asyncio.to_thread(shutil.rmtree, temp_dir)
@@ -111,3 +110,19 @@ async def _shutdown_browser() -> None:
         logger.info("hikari-core 截图服务已关闭")
     except Exception as e:
         logger.warning(f"关闭截图服务失败: {e}")
+
+
+def _prepare_browser() -> None:
+    """初始化时下载好 Playwright 内核（同步阻塞，放在线程里跑，别堵事件循环）。"""
+    from hikari_core.Html_Render.minimal_screens_hot_service import (
+        minimal_screens_hot_service,
+    )
+    from hikari_core.core.config import hikari_config
+
+    browser = hikari_config.use_broswer or "chromium"
+    executable = minimal_screens_hot_service.setup_playwright(browser=browser)
+    if not executable:
+        raise RuntimeError(
+            f"Playwright 浏览器内核（{browser}）准备失败，请检查网络/代理后重载插件"
+        )
+    logger.info(f"Playwright 浏览器内核已就绪: {executable}")

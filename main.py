@@ -30,7 +30,13 @@ from astrbot.core.star.filter.command import GreedyStr
 # 插件目录之外的另一个同名目录，反而更脆。
 # 注意：`hikari_core` 的 sys.path 注入在 `yuyuko_bot/__init__.py` 里，
 # 上面这行相对导入之后，`from hikari_core import ...` 才可用。
-from .yuyuko_bot import CoreRuntime, OutputSender, SelectionManager, reply_text  # noqa: E402
+from .yuyuko_bot import (  # noqa: E402
+    CoreRuntime,
+    OutputSender,
+    SelectionManager,
+    install_logging_bridge,
+    reply_text,
+)
 from hikari_core import Hikari_Model, callback_hikari, init_hikari  # noqa: E402
 
 COMMAND = "wws"
@@ -57,6 +63,8 @@ class WowsYuyuko(Star):
 
     async def initialize(self):
         """插件激活：下发配置并启动 hikari-core（对应 HikariBot-Official 的 start.py）。"""
+        # 热重载可能不重跑包内模块级调用，这里再确保一次（幂等）
+        install_logging_bridge()
         await self.runtime.start()
 
     async def terminate(self):
