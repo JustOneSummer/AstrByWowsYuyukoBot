@@ -26,6 +26,22 @@ class CoreRuntime:
     def __init__(self, config):
         self._config = config
         self._startup_task: asyncio.Task | None = None
+        # 渲染串行化锁：指令与 LLM 工具共用同一把。
+        # hikari-core 的截图服务是**单例单浏览器**（minimal_screens_hot_service），
+        # 而 AstrBot 对每条消息 / 每次工具调用都 create_task，并发会在
+        # `get_instance()` 的首次惰性初始化上打架，重复拉起 playwright 与浏览器进程。
+        # 惰性绑定事件循环：AstrBot 会在不同阶段创建本对象，导入期可能还没有运行中的 loop。
+        self._render_lock: asyncio.Semaphore | None = None
+        self._render_lock_loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def render_lock(self) -> asyncio.Semaphore:
+        """返回当前事件循环上的渲染信号量（同一循环内复用同一个）。"""
+        loop = asyncio.get_running_loop()
+        if self._render_lock is None or self._render_lock_loop is not loop:
+            self._render_lock = asyncio.Semaphore(1)
+            self._render_lock_loop = loop
+        return self._render_lock
 
     async def start(self) -> None:
         """下发配置并启动 hikari-core（同步重活都在线程里，超时不阻塞事件循环）。"""

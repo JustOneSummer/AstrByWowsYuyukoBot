@@ -58,5 +58,95 @@
     "type": "bool",
     "hint": "默认 False",
     "default": false
+  },
+  "llm_tool_enable": {
+    "description": "【LLM 工具】总开关。开启后用户可以用自然语言查询战绩（如「我最近打得怎么样」），而不用输入 /wws 指令",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_evaluate": {
+    "description": "【LLM 工具】查询结果是否让 AI 顺带点评玩家表现（关闭则只汇报数据，不点评）",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_rate_limit": {
+    "description": "【LLM 工具】每个会话每分钟最多查询次数，<=0 表示不限流（防止 AI 反复调用刷屏）",
+    "type": "int",
+    "hint": "默认 10",
+    "default": 10
+  },
+  "llm_tool_enable_account": {
+    "description": "【LLM 工具】允许查询战绩总表（我的水表怎么样）",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_ship": {
+    "description": "【LLM 工具】允许查询指定单船战绩（我的俾斯麦打得怎么样）",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_recent": {
+    "description": "【LLM 工具】允许查询近期战绩汇总（我最近打得怎么样）",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_recent_random": {
+    "description": "【LLM 工具】允许查询近期随机战战绩",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_recent_rank": {
+    "description": "【LLM 工具】允许查询近期排位战战绩",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_ship_recent": {
+    "description": "【LLM 工具】允许查询单船近期战绩（我最近开俾斯麦打得怎么样）",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_recent_battles": {
+    "description": "【LLM 工具】允许查询逐场近期战斗明细（刚才那把如何）",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_ships": {
+    "description": "【LLM 工具】允许按等级/国家/舰种筛选查询（我 10 级战列舰打得怎么样）",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_roll_ship": {
+    "description": "【LLM 工具】允许随机抽船（娱乐功能）",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_bind": {
+    "description": "【LLM 工具】允许 AI 引导用户绑定游戏账号",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_bind_list": {
+    "description": "【LLM 工具】允许查询已绑定的账号列表",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
+  },
+  "llm_tool_enable_bind_change": {
+    "description": "【LLM 工具】允许在已绑定账号之间切换",
+    "type": "bool",
+    "hint": "默认 True",
+    "default": true
   }
 }

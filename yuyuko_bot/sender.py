@@ -46,6 +46,15 @@ class OutputSender:
         else:
             await reply_text(event, f"未知数据类型标记 {hikari_data.Output.Data_Type}")
 
+    async def send_bytes(self, event, hikari_data: Hikari_Model, data: bytes) -> None:
+        """直接把一段图片字节落盘并发给用户。
+
+        给 LLM 工具用：那边是自己调 ``output_hikari`` 拿到 bytes，
+        没有走 ``send()`` 那条「从 Output.Data 取数据」的路径。
+        落盘与命名复用同一套逻辑（内容哈希，重复查询自动复用同一份文件）。
+        """
+        await self._save_and_send_image(event, hikari_data, data)
+
     async def _save_and_send_image(self, event, hikari_data: Hikari_Model, data: bytes):
         """图片先落盘再按文件发送（调试模式下顺带留一份 HTML 供排查）。"""
         try:
