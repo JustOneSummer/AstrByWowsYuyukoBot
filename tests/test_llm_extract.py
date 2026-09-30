@@ -114,21 +114,27 @@ def _case_table():
         build_ships_command,
     )
 
+    # 返回 (命令构造, 提取器, 说明, 是否需要「查自己」的账号上下文)
+    # 最后一个标记对应插件里 ToolExecutor 的 inject_identity：
+    # 查询类要开（插件据此解析绑定账号），roll 不需要账号，绑定类本身就是绑定操作。
     return {
         "account": (
             lambda ship, sv, nn: build_account_command(sv, nn),
             "account",
             "总表（水表）：账号信息 + 各模式统计 + 船型/等级分布",
+            True,
         ),
         "ship": (
             lambda ship, sv, nn: build_ship_command(ship, sv, nn),
             "ship",
             "单船：船只信息 + 各模式统计（typeInfo 节点）",
+            True,
         ),
         "recent": (
             lambda ship, sv, nn: build_recent_command(7, sv, nn),
             "recent",
             "近期：各模式统计 + 逐船明细（battleTypeInfo 节点）",
+            True,
         ),
         "recent_random": (
             lambda ship, sv, nn: build_recent_command(
@@ -136,6 +142,7 @@ def _case_table():
             ),
             "recent",
             "近期随机战",
+            True,
         ),
         "recent_rank": (
             lambda ship, sv, nn: build_recent_command(
@@ -143,26 +150,31 @@ def _case_table():
             ),
             "recent",
             "近期排位战",
+            True,
         ),
         "ship_recent": (
             lambda ship, sv, nn: build_ship_recent_command(ship, 7, sv, nn),
             "recent",
             "单船近期",
+            True,
         ),
         "recents": (
             lambda ship, sv, nn: build_literal_command("recents", sv, nn),
             "recents",
             "单场近期：逐场明细 + 按船汇总",
+            True,
         ),
         "ships": (
             lambda ship, sv, nn: build_ships_command(8, 10, None, None, sv, nn),
             "ships",
             "筛选查询：命中的船列表（会返回候选，需二次选择）",
+            True,
         ),
         "roll": (
             lambda ship, sv, nn: build_roll_command(),
             "roll",
             "随机战舰",
+            False,
         ),
     }
 
@@ -188,6 +200,31 @@ def _fail_hint(case: str) -> str:
     return FAIL_HINTS.get(case, "上游返回失败或无可提取数据")
 
 
+def _stub_browser_render() -> None:
+    """把真正的浏览器截图换成假图片。
+
+    ▍为什么要这样做
+    某些流程会走到 ``callback_hikari``（例如 ``ship`` 返回 wait、需要选船），
+    它内部会调 ``output_hikari`` → ``html_to_pic`` → 启动 chromium。
+    测试环境通常没装 Playwright 内核，直接抛
+    「浏览器（chromium）启动失败」，把用例判成失败 —— 但那是环境问题，
+    跟我们要验证的「数据提取/喂给 LLM 的内容」无关。
+
+    这里把截图换成一段假 PNG：`Output.Data` 变成 bytes 之后，
+    `QueryRunner.run` 仍然保留提取结果；本工具只测提取与文本，不测渲染。
+    （要连渲染一起验，就得装内核：`playwright install chromium`。）
+    """
+    try:
+        import hikari_core
+
+        async def _fake_pic(*_args, **_kwargs) -> bytes:
+            return b"\x89PNG\r\n\x1a\n(fake)"
+
+        hikari_core.html_to_pic = _fake_pic
+    except Exception as e:  # noqa: BLE001
+        print(f"[提示] 未替换截图实现（{e!r}），需要选船的用例可能因缺浏览器内核失败")
+
+
 async def run_case(
     name: str,
     *,
@@ -209,36 +246,59 @@ async def run_case(
     ``fixture`` 给了就读本地 JSON（离线，不打 API），否则真实调用。
     默认只打印**最终给 LLM 的文本**；``verbose`` 才额外打印提取结果与原始数据。
     """
-    builder, extractor, desc = _case_table()[name]
+    builder, extractor, desc, inject_identity = _case_table()[name]
     command_text = builder(ship, server, nickname)
 
+    # ▍走插件的真实链路（QueryRunner），而不是直接调 hikari
+    # 直接调 init_hikari_no_output 会绕过插件逻辑（比如「查自己」的身份注入），
+    # 那样测试就测不到真东西 —— ships 的账号解析问题就是这么漏掉的。
+    source = ""
     if fixture is not None:
         from hikari_core import Hikari_Model
+        from yuyuko_llm.query import QueryResult
 
         raw = json.loads(fixture.read_text(encoding="utf-8"))
-        hikari = Hikari_Model()
-        hikari.success(raw)
-        hikari.Output.Template = "(离线夹具，无模板)"
-        source = f"离线夹具 {fixture}"
+        fake = Hikari_Model()
+        fake.success(raw)
+        fake.Output.Template = "(离线夹具，无模板)"
+        result = QueryResult(ok=True, data=raw, hikari=fake)
+        source = f"离线夹具 {fixture.name}"
     else:
-        from hikari_core import init_hikari_no_output
+        from yuyuko_llm.query import QueryRunner
 
-        hikari = await init_hikari_no_output(
-            command_text=command_text,
-            platform=platform,
-            PlatformId=platform_id,
-            BotId=bot_id,
-            GroupId=None,
+        runner = QueryRunner(
+            platform=platform, platform_id=platform_id, bot_id=bot_id, group_id=None
         )
+        result = await runner.run(
+            command_text, extractor, inject_identity=inject_identity and not nickname
+        )
+        # 二次选择（ships 这类）：自动选第 1 项走完，否则停在候选列表看不到数据
+        if result.need_select:
+            options = result.select_options or []
+            _hr(f"需要二次选择 —— 自动选第 1 项（共 {len(options)} 项）")
+            if not options:
+                print("候选列表为空，无法继续")
+                return False
+            if verbose:
+                _dump("候选项（前 5 条）", options[:5], limit=1500)
+            result = await runner.run(
+                command_text,
+                extractor,
+                select_index=1,
+                inject_identity=inject_identity and not nickname,
+            )
         source = f"平台 {platform}/{platform_id}"
 
+    hikari = result.hikari
+    status = getattr(hikari, "Status", "success" if result.ok else "failed")
+
     _hr(f"用例 {name} —— {desc}")
-    identity = "查自己（走绑定关系）" if not nickname else f"查 {server or ''} {nickname}".strip()
-    print(f"{source}  |  command_text {command_text!r}  |  {identity}  |  {hikari.Status}")
-    if verbose:
+    who = "查自己（走绑定关系）" if not nickname else f"查 {server or ''} {nickname}".strip()
+    print(f"{source}  |  command_text {command_text!r}  |  {who}  |  {status}")
+    if verbose and hikari is not None:
         print(f"模板: {hikari.Output.Template}")
 
-    if save_path:
+    if save_path and hikari is not None:
         try:
             save_path.write_text(
                 json.dumps(hikari.Output.Data, ensure_ascii=False, indent=2, default=str),
@@ -248,53 +308,21 @@ async def run_case(
         except Exception as e:
             print(f"保存失败: {e}")
 
-    if hikari.Status == "wait":
-        # ships 这类要用户挑一项才有数据。测试里没有用户，自动选第 1 项走完，
-        # 否则用例会停在「候选列表」上，看不到最终提取结果。
-        options = hikari.Input.Select_Data or []
-        _hr(f"需要二次选择 —— 自动选第 1 项（共 {len(options)} 项）")
-        if not options:
-            print("候选列表为空，无法继续")
-            return False
-        if verbose:
-            _dump("候选项（前 5 条）", options[:5], limit=1500)
-        try:
-            from hikari_core import callback_hikari
+    if result.need_select:
+        print("\n仍在等待选择（未走完流程）")
+        return False
 
-            hikari.Input.Select_Index = 1
-            hikari = await callback_hikari(hikari)
-            print(f"选择后状态: {hikari.Status}")
-        except Exception as e:  # noqa: BLE001
-            print(f"二次选择失败: {e!r}")
-            return False
-        if hikari.Status != "success":
-            _hr("选择后仍未成功")
-            print(f"Status = {hikari.Status}  |  {hikari.Output.Data}")
-            return False
-
-    if hikari.Status != "success":
+    if not result.ok:
         _hr("查询未成功（这本身就是一种结果）")
-        print(f"Status = {hikari.Status}")
-        print(f"Output.Data（会给用户的错误文案）: {hikari.Output.Data}")
+        print(f"Status = {status}")
+        print(f"message（会给用户的文案）: {result.message}")
         return False
 
     if raw_only:
-        _dump("原始 Output.Data", hikari.Output.Data)
+        _dump("原始 Output.Data", result.data)
         return True
 
-    # ---------------- 提取 ----------------
-    from yuyuko_llm import BattleStatsExtractor as E
-
-    raw = hikari.Output.Data
-    extractors = {
-        "account": E.account_summary,
-        "ship": E.ship_summary,
-        "recent": E.recent_summary,
-        "recents": E.recents_summary,
-        "ships": E.ships_summary,
-        "roll": E.roll_summary,
-    }
-    extracted = extractors.get(extractor, lambda d: d)(raw)
+    extracted = result.data
 
     if not extracted:
         print("\n[!] 提取结果是空的：字段路径跟上游对不上（不是上游没数据）")
@@ -305,13 +333,14 @@ async def run_case(
     # 细节默认不打印 —— 平时只关心「最终给 LLM 的是什么」，用 --verbose 才展开
     if verbose:
         _dump("提取结果（喂给 LLM 的字段）", extracted)
-        _dump("原始 Output.Data（对照用，看提取漏没漏）", raw)
+        if hikari is not None:
+            _dump("原始 Output.Data（对照用，看提取漏没漏）", hikari.Output.Data)
 
     # ---------------- 给 LLM 的文本 ----------------
     _hr("③ 给 LLM 的最终文本" if verbose else "给 LLM 的最终文本")
     print(_format_for_llm(extractor, extracted, truncate=truncate))
 
-    _report_missing(name, raw, extracted)
+    _report_missing(name, extracted)
     return True
 
 
@@ -370,14 +399,14 @@ _EXPECT: dict[str, tuple[str, ...]] = {
 }
 
 
-def _report_missing(case: str, raw, extracted) -> None:
+def _report_missing(case: str, extracted) -> None:
     """粗查一下该界面关心的顶层字段有没有缺。"""
     if not isinstance(extracted, dict):
         return
     expect = _EXPECT.get(case, ())
     missing = [k for k in expect if not extracted.get(k)]
     if missing:
-        print(f"\n⚠️  该界面预期字段缺失: {missing}")
+        print(f"\n[!] 该界面预期字段缺失: {missing}")
 
 
 async def main() -> int:
@@ -440,6 +469,8 @@ async def main() -> int:
             print(f"token   : {args.token[:12]}...")
         if use_fixture:
             print("离线模式：不会发起任何 API 请求")
+
+    _stub_browser_render()
 
     cases = ALL_ORDER if args.case == "all" else [args.case]
     bad = [c for c in cases if c not in ALL_ORDER]

@@ -18,7 +18,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from hikari_core import Hikari_Model, callback_hikari, init_hikari_no_output, output_hikari
+from hikari_core import Hikari_Model, callback_hikari, hikari_config, init_hikari_no_output, output_hikari
 
 from .extract import BattleStatsExtractor, normalize_battle_mode
 from .guide import classify_error
@@ -33,6 +33,110 @@ __all__ = [
     "build_bind_command",
     "build_roll_command",
 ]
+
+
+# ===========================================================================
+# 「查自己」的身份解析
+#
+# ▍为什么要插件自己解析，而不是让 hikari 的 me 模式去查
+# hikari 的部分功能在「查自己」时把 **平台侧用户 ID 直接当成游戏 accountId**
+# 去请求（例如 account/ships.py 的 `server = Input.Platform; accountId = Input.PlatformId`），
+# 于是请求变成 `?server=QQ&accountId=<QQ号>`，上游查不到该账号，返回空数据。
+#
+# 那是 vendored 上游代码，本插件不改它（改了下次同步即被覆盖）。
+# 取而代之：插件先用绑定接口解析出「该平台用户绑定的游戏账号」，
+# 再把 `服务器 + 昵称` 拼进指令，让 hikari 走「服务器+昵称」那条正常路径。
+# ===========================================================================
+
+# 平台适配器名 -> yuyuko 侧的平台类型取值
+_PLATFORM_TYPE = {
+    "QQ": "QQ",
+    "QQ_OFFICIAL": "QQ_CHANNEL",
+    "QQ_CHANNEL": "QQ_CHANNEL",
+}
+
+_IDENTITY_CACHE: dict[tuple[str, str], dict[str, str]] = {}
+_IDENTITY_TTL = 300.0
+_identity_cached_at: dict[tuple[str, str], float] = {}
+
+
+async def resolve_identity(platform: str, platform_id: str) -> dict[str, str] | None:
+    """解析平台用户当前绑定的游戏账号。
+
+    Returns:
+        ``{"account_id", "user_name", "server"}``；未绑定或查询失败返回 ``None``。
+        带 5 分钟缓存（同一账号在一轮对话里会被反复查询）。
+
+    ▍为什么借用 hikari 的 client
+    yuyuko 的接口对请求头有要求（除 Authorization 还要 ``Yuyuko-Client-Type``，
+    缺了会回 409「请求头不符合标准」）。自己拼 httpx 容易漏，
+    直接用 ``get_client_yuyuko`` 与上游保持一致，也复用它的连接池。
+    """
+    key = (platform, str(platform_id))
+    import time
+
+    cached = _IDENTITY_CACHE.get(key)
+    if cached and (time.monotonic() - _identity_cached_at.get(key, 0.0)) < _IDENTITY_TTL:
+        return cached
+
+    platform_type = _PLATFORM_TYPE.get(platform, platform)
+    url = f"{hikari_config.yuyuko_url}/api/user/platform/bind/list"
+    params = {"platformType": platform_type, "platformId": str(platform_id)}
+    try:
+        from hikari_core.core.http_client import get_client_yuyuko
+        from hikari_core.core.model import Hikari_Model
+
+        client = await get_client_yuyuko(Hikari_Model().UserInfo)
+        resp = await client.get(url, params=params, timeout=20)
+        result = resp.json()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"解析绑定账号失败: {e!r}")
+        return None
+
+    if result.get("code") != 200 or not result.get("data"):
+        logger.info(f"平台用户未绑定游戏账号: {platform}/{platform_id}（{result.get('message')}）")
+        return None
+
+    items = [x for x in result["data"] if isinstance(x, dict) and x.get("accountId")]
+    if not items:
+        return None
+
+    # 当前账号：defaultAccount == accountId（与 bind-list 模板同款判定），
+    # 兼容 defaultId 布尔标记，都取不到就退回第一条
+    chosen = None
+    for item in items:
+        mark = item.get("defaultAccount")
+        if mark is not None and str(mark) == str(item.get("accountId")):
+            chosen = item
+            break
+    if chosen is None:
+        chosen = next((x for x in items if x.get("defaultId")), None) or items[0]
+
+    identity = {
+        "account_id": str(chosen.get("accountId")),
+        "user_name": str(chosen.get("userName") or ""),
+        "server": str(chosen.get("server") or ""),
+    }
+    _IDENTITY_CACHE[key] = identity
+    _identity_cached_at[key] = time.monotonic()
+    logger.info(f"解析到绑定账号: {identity}")
+    return identity
+
+
+def _with_identity(command_text: str, identity: dict[str, str] | None) -> str:
+    """把「服务器 + 昵称」前置到指令前，让 hikari 走查别人的正常路径。
+
+    同时**去掉 ``me``**：``me`` 是「查自己」的标记，注入真实身份后再留着它，
+    hikari 会因为它与「服务器+昵称」并存而判成「未识别的指令」
+    （``me asia Nahida_official`` → 无法路由）。
+    身份已由前缀表达，去掉即可；总表这类「只有 me」的命令因此变成纯身份查询，
+    正好走 hikari 的默认账号查询分支。
+    """
+    if not identity or not identity.get("user_name"):
+        return command_text
+    tokens = [t for t in command_text.split() if t.lower() != "me"]
+    head = " ".join(x for x in (identity.get("server"), identity.get("user_name")) if x)
+    return " ".join([head, *tokens]).strip()
 
 
 # ===========================================================================
@@ -243,6 +347,7 @@ class QueryRunner:
         *,
         select_index: int | None = None,
         battle_mode: str | None = None,
+        inject_identity: bool = False,
         **extract_kwargs: Any,
     ) -> QueryResult:
         """执行查询。
@@ -252,16 +357,30 @@ class QueryRunner:
             extractor: 用哪个提取方法，见 ``_EXTRACTORS``
             select_index: 二次选择时用户给出的序号
             battle_mode: 只要某个战斗模式（None = 全部，即默认行为）
+            inject_identity: 是否是「查自己」的查询。
+                为 True 时插件先解析绑定账号，把「服务器+昵称」拼进指令，
+                绕开 hikari 部分功能在 me 模式下拿平台 ID 当 accountId 的问题；
+                解析不到绑定则返回「未绑定」提示（让模型引导用户去绑定）。
             extract_kwargs: 透传给提取方法的额外参数
         """
         result = QueryResult()
         try:
+            identity = None
+            if inject_identity:
+                identity = await resolve_identity(self.platform, self.platform_id)
+                if identity is None:
+                    result.ok = False
+                    result.message = (
+                        "该用户似乎还没绑定窝窝屎账号，请引导 TA 用 wws_bind 工具绑定后再查询"
+                    )
+                    return result
+
             # select_index 是「上一轮返回了候选项，这一轮带序号继续」的分支
             if select_index is not None:
-                hikari = await self._run_with_select(command_text, select_index)
+                hikari = await self._run_with_select(command_text, select_index, identity)
             else:
                 hikari = await init_hikari_no_output(
-                    command_text=command_text,
+                    command_text=_with_identity(command_text, identity),
                     platform=self.platform,
                     PlatformId=self.platform_id,
                     BotId=self.bot_id,
@@ -314,10 +433,15 @@ class QueryRunner:
         data = hikari.Output.Data
         return data if isinstance(data, bytes) else None
 
-    async def _run_with_select(self, command_text: str, select_index: int) -> Hikari_Model:
+    async def _run_with_select(
+        self,
+        command_text: str,
+        select_index: int,
+        identity: dict[str, str] | None = None,
+    ) -> Hikari_Model:
         """带序号的二次调用：先重建 wait 状态，再走 callback_hikari。"""
         hikari = await init_hikari_no_output(
-            command_text=command_text,
+            command_text=_with_identity(command_text, identity),
             platform=self.platform,
             PlatformId=self.platform_id,
             BotId=self.bot_id,

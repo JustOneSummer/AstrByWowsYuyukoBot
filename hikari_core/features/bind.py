@@ -142,62 +142,6 @@ async def delete_BindInfo(hikari: Hikari_Model) -> Hikari_Model:
             return hikari.failed(f"{result['message']}")
 
 
-async def resolve_default_bind(hikari: Hikari_Model):
-    """解析平台用户当前绑定的游戏账号，返回 ``{accountId, server, userName}``。
-
-    ▍为什么需要它
-    「查自己」（Search_Type != 3）时不能拿 ``Input.PlatformId`` 当游戏 accountId ——
-    那是**平台侧用户 ID**（QQ 号），跟游戏账号 ID 完全是两回事。
-    直接拿它去请求，上游会因为查不到该账号而返回空/报错。
-
-    ▍与 get_DefaultBindInfo 的区别
-    · 不套 ``@handle_yuyuko_errors``：让调用方自己决定失败语义，
-      避免「查自己」失败时把整个指令判成错误
-    · 判定当前账号用 ``defaultAccount == accountId``（与 bind-list 模板同款逻辑），
-      并兼容 ``defaultId`` 布尔标记；都取不到时退回第一条
-    · 返回精简 dict，调用方直接取 accountId / server
-
-    拿不到绑定关系时返回 ``None``（调用方应提示用户先绑定）。
-    """
-    from hikari_core.core.http_client import get_client_yuyuko
-
-    url = f'{hikari_config.yuyuko_url}/api/user/platform/bind/list'
-    params = {
-        'platformType': hikari.Input.Platform or hikari.UserInfo.Platform,
-        'platformId': hikari.Input.PlatformId or hikari.UserInfo.PlatformId,
-    }
-    try:
-        client_yuyuko = await get_client_yuyuko(hikari.UserInfo)
-        resp = await client_yuyuko.get(url, params=params, timeout=20)
-        result = json.loads(resp.content)
-    except Exception:
-        logger.error(traceback.format_exc())
-        return None
-
-    if result.get('code') != 200 or not result.get('data'):
-        return None
-
-    items = [x for x in result['data'] if isinstance(x, dict)]
-    if not items:
-        return None
-
-    def _pick(item):
-        return {
-            'accountId': item.get('accountId'),
-            'server': item.get('server'),
-            'userName': item.get('userName'),
-        }
-
-    for item in items:
-        mark = item.get('defaultAccount')
-        if mark is not None and str(mark) == str(item.get('accountId')):
-            return _pick(item)
-    for item in items:
-        if item.get('defaultId'):
-            return _pick(item)
-    return _pick(items[0])
-
-
 @handle_yuyuko_errors()
 async def get_DefaultBindInfo(hikari: Hikari_Model, platformType, platformId):
     """获取默认绑定账号

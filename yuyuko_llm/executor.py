@@ -75,12 +75,18 @@ class ToolExecutor:
         send_image: bool = True,
         select_index: int | None = None,
         battle_mode: str | None = None,
+        inject_identity: bool = False,
         **extract_kwargs: Any,
     ) -> str:
         """执行一次工具调用，返回给模型的文本。
 
         Args:
             tool_name: 工具名，用于查它自己的开关（见 ``guide.TOOL_SWITCH_FIELDS``）。
+            inject_identity: 是否需要「查自己」的账号上下文。
+                为 True 时由插件解析绑定账号并注入，绕开 hikari me 模式的
+                「平台 ID 当 accountId」问题（见 ``query.resolve_identity``）。
+                查询类工具都要开；``roll`` 不需要账号，绑定类工具本身就是绑定操作，
+                二者传 False 即可。
         """
         # 1) 总开关：关掉时给出明确说明，免得模型以为自己用错了参数
         if not self._guard.enabled():
@@ -117,6 +123,7 @@ class ToolExecutor:
             extractor,
             select_index=select_index,
             battle_mode=battle_mode,
+            inject_identity=inject_identity,
             **extract_kwargs,
         )
 

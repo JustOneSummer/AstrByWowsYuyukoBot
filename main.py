@@ -22,18 +22,9 @@ from astrbot.api.star import Context, Star
 # llm_tool：把一个 async 函数注册成 LLM 可调用的工具（function-calling）。
 # 它从 astrbot.api 顶层导出；工具的参数 schema 由函数 docstring 的 Args: 段生成。
 from astrbot.api import llm_tool
-# GreedyStr 是 AstrBot 的「贪婪参数」标记（AstrBotDevs/AstrBot#1759 合入）：
-# 命令处理器声明 `args: GreedyStr` 后，CommandFilter 会把「指令名之后的全部剩余文本」
-# 原样交过来，顺带完成唤醒前缀剥离与连续空白归一化。它没有在 astrbot.api 里再导出，
-# 所以从实现模块直接引入（注意必须放在 astrbot.api 之后，否则会踩到循环导入）。
+
 from astrbot.core.star.filter.command import GreedyStr
 
-# 用**相对导入**取插件内部实现：AstrBot 以 `data.plugins.<插件目录>.main` 的形式导入
-# 本文件，本文件因此属于该包，相对导入稳定可用；而写成绝对导入 `import yuyuko_bot`
-# 会依赖「插件目录在 sys.path 上」，一旦插件目录被加入 sys.path 还可能解析到
-# 插件目录之外的另一个同名目录，反而更脆。
-# 注意：`hikari_core` 的 sys.path 注入在 `yuyuko_bot/__init__.py` 里，
-# 所以必须**先**导入 yuyuko_bot，`yuyuko_llm` 内部的 hikari_core 导入才可用。
 from .yuyuko_bot import (
     CoreRuntime,
     OutputSender,
@@ -71,18 +62,8 @@ MAX_RECENT_DAYS = 90
 
 
 def tool_guard(func):
-    """LLM 工具的最外层兜底：绝不把异常抛给框架。
-
-    ▍为什么必须有这一层
-    AstrBot 的 ``call_local_llm_tool`` 会把工具抛出的异常包成
-    ``Exception(f"Tool execution error: {e}. Traceback: {trace_}")`` 直接回给模型
-    （见 ``astrbot/core/astr_agent_tool_exec.py``）。那意味着模型会看到一大段
-    英文堆栈，然后照着重述给用户 —— 用户只会更困惑。
-
-    所以这里自己接住：按故障类型给出**行动指引**，让模型说人话。
-
-    用 ``functools.wraps`` 保留原签名与 docstring：``@llm_tool`` 是靠 docstring
-    生成参数 schema 的，签名丢了工具参数就会变空。
+    """
+    异常处理
     """
 
     @functools.wraps(func)
@@ -266,7 +247,8 @@ class WowsYuyuko(Star):
         """
         server, nickname = _identity(server, nickname)
         return await self.tools.execute(
-            event, build_account_command(server, nickname), "account", "wws_account"
+            event, build_account_command(server, nickname), "account", "wws_account",
+            inject_identity=not nickname,
         )
 
     @llm_tool(name="wws_ship")
@@ -290,7 +272,8 @@ class WowsYuyuko(Star):
         """
         server, nickname = _identity(server, nickname)
         return await self.tools.execute(
-            event, build_ship_command(ship, server, nickname), "ship", "wws_ship"
+            event, build_ship_command(ship, server, nickname), "ship", "wws_ship",
+            inject_identity=not nickname,
         )
 
     @llm_tool(name="wws_recent")
@@ -321,6 +304,7 @@ class WowsYuyuko(Star):
             "recent",
             "wws_recent",
             battle_mode=battle_mode,
+            inject_identity=not nickname,
         )
 
     @llm_tool(name="wws_recent_random")
@@ -346,7 +330,9 @@ class WowsYuyuko(Star):
         command = build_recent_command(
             _clamp_days(days), server, nickname, mode=COMMAND_BUILDERS["recent_random"]
         )
-        return await self.tools.execute(event, command, "recent", "wws_recent_random")
+        return await self.tools.execute(
+            event, command, "recent", "wws_recent_random", inject_identity=not nickname
+        )
 
     @llm_tool(name="wws_recent_rank")
     @tool_guard
@@ -370,7 +356,9 @@ class WowsYuyuko(Star):
         command = build_recent_command(
             _clamp_days(days), server, nickname, mode=COMMAND_BUILDERS["recent_rank"]
         )
-        return await self.tools.execute(event, command, "recent", "wws_recent_rank")
+        return await self.tools.execute(
+            event, command, "recent", "wws_recent_rank", inject_identity=not nickname
+        )
 
     @llm_tool(name="wws_ship_recent")
     @tool_guard
@@ -395,7 +383,9 @@ class WowsYuyuko(Star):
         """
         server, nickname = _identity(server, nickname)
         command = build_ship_recent_command(ship, _clamp_days(days), server, nickname)
-        return await self.tools.execute(event, command, "recent", "wws_ship_recent")
+        return await self.tools.execute(
+            event, command, "recent", "wws_ship_recent", inject_identity=not nickname
+        )
 
     @llm_tool(name="wws_recent_battles")
     @tool_guard
@@ -417,7 +407,7 @@ class WowsYuyuko(Star):
         server, nickname = _identity(server, nickname)
         return await self.tools.execute(
             event, build_literal_command("recents", server, nickname), "recents",
-            "wws_recent_battles",
+            "wws_recent_battles", inject_identity=not nickname,
         )
 
     @llm_tool(name="wws_ships")
@@ -453,6 +443,7 @@ class WowsYuyuko(Star):
             ),
             "ships",
             "wws_ships",
+            inject_identity=not nickname,
         )
 
     @llm_tool(name="wws_roll_ship")
