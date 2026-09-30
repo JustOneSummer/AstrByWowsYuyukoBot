@@ -71,9 +71,13 @@ def mode_node(
             "color": "#00BCD4",
             "details": {
                 "pr": pr,
-                "originalServer": {"shipId": 0, "damage": 669724685.0, "frags": 6714.86, "wins": 4660.83},
-                "user": {"shipId": 0, "damage": 905628767.0, "frags": 10411.0, "wins": 5813.0},
-                "userServer": {"shipId": 0, "damage": 669724685.0, "frags": 6714.86, "wins": 4660.83},
+                # 累计值（原始服务器总盘子）——别把它当成「服务器场均」
+                "originalServer": {"shipId": 0, "damage": 705499299.5, "frags": 7225.08, "wins": 5036.80},
+                "user": {"shipId": 0, "damage": 956758988.0, "frags": 11213.0, "wins": 6276.0},
+                "userServer": {"shipId": 0, "damage": 705499299.5, "frags": 7225.08, "wins": 5036.80},
+                # 分项比率：这才是「服务器数据 场均 / 胜率 / 击杀」
+                "two": {"shipId": 0, "damage": 1.36, "frags": 1.55, "wins": 1.25},
+                "three": {"shipId": 0, "damage": 1.59, "frags": 1.61, "wins": 1.82},
             },
         },
         "shipInfo": {

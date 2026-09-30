@@ -60,39 +60,32 @@ print("=" * 72)
 st = E.battle_stats({"battleTypeInfo": {"PVP": mode_node()}}, "PVP")
 print(json.dumps(st, ensure_ascii=False, indent=2)[:1800])
 
+# 关键信息（键名对齐模板界面显示的中文标签）
 need = [
-    "battles", "wins", "losses", "survived", "win_and_survived",
-    "win_rate", "avg_damage", "avg_frags", "avg_kd", "avg_xp",
-    "avg_basic_xp", "avg_scouting_damage", "avg_planes_killed",
-    "avg_ships_spotted", "avg_art_agro", "avg_tpd_agro",
-    "hit_ratio", "hit_ratio_atba", "hit_ratio_tpd", "hit_ratio_tbomb",
-    "capture_contribution", "defense_contribution", "top_grade",
-    "last_battle_time", "pr", "pr_next_value", "pr_name",
-    "maxFrags", "maxFragsByMain", "maxDamageDealt", "maxScoutingDamage",
-    "maxPlanesKilled", "maxShipsSpotted", "maxTotalAgro", "maxXp",
-    "fragsByMain", "fragsByTpd", "fragsByPlanes", "fragsByRam",
-    "fragsByDbomb", "fragsByAtba",
+    "场次", "胜率", "场均", "命中率", "存活率", "击杀", "经验", "PR",
+    "最高伤害", "最高潜在", "最高侦察", "最高击杀", "最高飞机击落", "最高经验",
+    "服务器场均", "服务器胜率", "服务器击杀", "战斗类型", "战斗类型名",
 ]
 missing = [k for k in need if k not in st]
-check(not missing, f"模板字段齐全（缺 {missing}）" if missing else "模板字段齐全")
+check(not missing, f"关键信息齐全（缺 {missing}）" if missing else "关键信息齐全")
 
 print()
-check(st.get("battles") == 300, f"battles = {st.get('battles')}")
-check(abs((st.get("win_rate") or 0) - 55.5) < 1e-6, f"win_rate = {st.get('win_rate')}")
-check(st.get("pr") == 1520, f"pr = {st.get('pr')}")
-check(st.get("maxDamageDealt") == 210000,
-      f"maxDamageDealt = {st.get('maxDamageDealt')}")  # {shipId, value} 包装也要能取出
-check(st.get("hit_ratio") == 34.48, f"hit_ratio = {st.get('hit_ratio')}")
-check(st.get("top_grade") == 5, f"top_grade = {st.get('top_grade')}")
+check(st.get("场次") == 300, f"场次 = {st.get('场次')}")
+check(abs((st.get("胜率") or 0) - 55.5) < 1e-6, f"胜率 = {st.get('胜率')}")
+check(st.get("PR") == 1520, f"PR = {st.get('PR')}")
+check(st.get("最高伤害") == 210000,
+      f"最高伤害 = {st.get('最高伤害')}")  # {shipId, value} 包装里要取到 value
+check(st.get("命中率") == 34.48, f"命中率 = {st.get('命中率')}")
+check(abs((st.get("存活率") or 0) - 40.0) < 0.1, f"存活率 = {st.get('存活率')}（120/300）")
+check(st.get("最高经验") == 3200, f"最高经验 = {st.get('最高经验')}")
+check(st.get("战斗类型名") == "随机", f"战斗类型名 = {st.get('战斗类型名')}")
+# 服务器分项取自 details.two（不是 originalServer 的累计值）
+check(abs((st.get("服务器场均") or 0) - 1.36) < 0.01, f"服务器场均 = {st.get('服务器场均')}（比率）")
 
 print()
-flat = _flat_keys(st)
-noise = [k for k in ("color", "winsData", "damageData", "code", "shipId", "type")
-         if k in flat]
-check(not noise, f"噪声/渲染字段已过滤（残留 {noise}）" if noise else "噪声/渲染字段已过滤")
-redundant = [k for k in ("win", "damage", "frags", "kd", "xp", "ratioMain", "value", "name", "nextValue")
-             if k in flat]
-check(not redundant, f"同义键已去重（残留 {redundant}）" if redundant else "同义键已去重")
+# 精简后不该再出现上游原始字段名
+leaked = [k for k in st if k not in need and k not in ("战斗类型",)]
+check(not leaked, f"未泄漏非关键字段（残留 {leaked}）" if leaked else "只输出关键信息")
 
 print()
 print("=" * 72)
@@ -104,8 +97,8 @@ for k in ("ship_name", "ship_name_en", "ship_type", "ship_level", "ship_nation",
 check(s.get("ship_level") == "X", "等级取的是 levelStr（X）")
 bt = s.get("battle_types") or {}
 check(set(bt) == {"PVP", "RANK_SOLO"}, f"模式 = {list(bt)}")
-check((bt.get("PVP") or {}).get("win_rate") == 58.3, f"PVP 胜率 = {(bt.get('PVP') or {}).get('win_rate')}")
-check((bt.get("PVP") or {}).get("maxDamageDealt") == 210000, "单船也能取到最高伤害")
+check((bt.get("PVP") or {}).get("胜率") == 58.3, f"PVP 胜率 = {(bt.get('PVP') or {}).get('胜率')}")
+check((bt.get("PVP") or {}).get("最高伤害") == 210000, "单船也能取到最高伤害")
 
 print()
 print("=" * 72)
@@ -123,8 +116,8 @@ names = [r["name"] for r in (a.get("ship_types") or [])]
 check(set(names) == {"战列舰", "巡洋舰", "驱逐舰"}, f"船型中文 = {names}")
 lv = [r["name"] for r in (a.get("levels") or [])]
 check(set(lv) == {"10", "9"}, f"等级键 = {lv}")
-check(all(r.get("win_rate") is not None for r in (a.get("ship_types") or [])), "分布含胜率")
-check(all(r.get("pr") is not None for r in (a.get("ship_types") or [])), "分布含 PR")
+check(all(r.get("胜率") is not None for r in (a.get("ship_types") or [])), "分布含胜率")
+check(all(r.get("PR") is not None for r in (a.get("ship_types") or [])), "分布含 PR")
 
 print()
 print("=" * 72)
@@ -138,7 +131,7 @@ check(len(ships) == 2, f"逐船条数 = {len(ships)}")
 check(ships and ships[0].get("ship_name") == "岛风",
       f"按场次降序，第一条 = {ships[0].get('ship_name') if ships else None}")
 check(ships and ships[0].get("level") == "X", f"逐船等级 = {ships[0].get('level') if ships else None}")
-check(ships and ships[0].get("battles") == 80, f"逐船场次 = {ships[0].get('battles') if ships else None}")
+check(ships and ships[0].get("场次") == 80, f"逐船场次 = {ships[0].get('场次') if ships else None}")
 
 print()
 print("=" * 72)

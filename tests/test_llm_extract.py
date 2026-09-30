@@ -254,14 +254,17 @@ async def run_case(
     # 那样测试就测不到真东西 —— ships 的账号解析问题就是这么漏掉的。
     source = ""
     if fixture is not None:
-        from hikari_core import Hikari_Model
-        from yuyuko_llm.query import QueryResult
+        # 离线：读夹具后**照样走插件的提取函数**。
+        # 早先这里直接把原始响应当结果（result.data = raw），
+        # 于是打印的是 15k 行原始 JSON（19 万字符），而不是提取后的关键信息。
+        from yuyuko_llm.query import QueryResult, QueryRunner
 
         raw = json.loads(fixture.read_text(encoding="utf-8"))
-        fake = Hikari_Model()
-        fake.success(raw)
-        fake.Output.Template = "(离线夹具，无模板)"
-        result = QueryResult(ok=True, data=raw, hikari=fake)
+        result = QueryResult(
+            ok=True,
+            data=QueryRunner._extract(extractor, raw),
+            hikari=None,
+        )
         source = f"离线夹具 {fixture.name}"
     else:
         from yuyuko_llm.query import QueryRunner
@@ -398,15 +401,31 @@ _EXPECT: dict[str, tuple[str, ...]] = {
     "roll": ("ship_name",),
 }
 
+# 每个战斗模式里应有的**关键信息**（键名对齐模板界面显示的中文标签）
+_EXPECT_MODE: tuple[str, ...] = (
+    "场次", "胜率", "场均", "命中率", "存活率", "击杀", "经验", "PR",
+    "最高伤害", "最高潜在", "最高侦察", "最高击杀", "最高飞机击落", "最高经验",
+    "服务器场均", "服务器胜率", "服务器击杀", "战斗类型",
+)
+
 
 def _report_missing(case: str, extracted) -> None:
-    """粗查一下该界面关心的顶层字段有没有缺。"""
+    """粗查一下该界面关心的字段有没有缺。"""
     if not isinstance(extracted, dict):
         return
     expect = _EXPECT.get(case, ())
     missing = [k for k in expect if not extracted.get(k)]
     if missing:
         print(f"\n[!] 该界面预期字段缺失: {missing}")
+
+    # 再看一眼模式里关键信息齐不齐（缺字段是最容易出的问题）
+    modes = extracted.get("battle_types")
+    if isinstance(modes, dict) and modes:
+        first_mode, stats = next(iter(modes.items()))
+        if isinstance(stats, dict):
+            lack = [k for k in _EXPECT_MODE if k not in stats]
+            if lack:
+                print(f"[!] {first_mode} 关键信息缺失: {lack}")
 
 
 async def main() -> int:
@@ -469,8 +488,6 @@ async def main() -> int:
             print(f"token   : {args.token[:12]}...")
         if use_fixture:
             print("离线模式：不会发起任何 API 请求")
-
-    _stub_browser_render()
 
     cases = ALL_ORDER if args.case == "all" else [args.case]
     bad = [c for c in cases if c not in ALL_ORDER]

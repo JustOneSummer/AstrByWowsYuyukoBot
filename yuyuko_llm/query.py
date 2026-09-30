@@ -18,7 +18,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from hikari_core import Hikari_Model, callback_hikari, hikari_config, init_hikari_no_output, output_hikari
+from hikari_core import Hikari_Model, hikari_config, init_hikari_no_output, output_hikari
 
 from .extract import BattleStatsExtractor, normalize_battle_mode
 from .guide import classify_error
@@ -439,7 +439,17 @@ class QueryRunner:
         select_index: int,
         identity: dict[str, str] | None = None,
     ) -> Hikari_Model:
-        """带序号的二次调用：先重建 wait 状态，再走 callback_hikari。"""
+        """带序号的二次调用：先重建 wait 状态，再执行下一步。
+
+        ▍为什么不用 ``callback_hikari``
+        它内部会 ``return await output_hikari(hikari)``，而 ``output_hikari`` 在
+        渲染之后会把 ``hikari.Output.Data`` **换成图片字节**（``__init__.py`` 里
+        ``hikari.Output.Data = await html_to_pic(...)``）。那样提取器拿到的就是
+        PNG 二进制，二次选择后的数据全丢。
+        这里改走底层 ``hikari.Function(hikari)``：语义与 callback 一致
+        （都是执行下一步），但不会用渲染结果覆盖数据；渲染由 ``render()``
+        单独负责。
+        """
         hikari = await init_hikari_no_output(
             command_text=_with_identity(command_text, identity),
             platform=self.platform,
@@ -453,7 +463,9 @@ class QueryRunner:
         if not (1 <= int(select_index) <= len(options)):
             return hikari.failed(f"序号超出范围，可选 1-{len(options)}")
         hikari.Input.Select_Index = int(select_index)
-        return await callback_hikari(hikari)
+        if not hikari.Function:
+            return hikari.error('缺少请求方法')
+        return await hikari.Function(hikari)
 
     @staticmethod
     def _extract(

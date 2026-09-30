@@ -59,67 +59,71 @@ class BattleStatsExtractor:
     #                     expansion, lastBattleTime, recordTime}
     # 也就是说**统计全在 shipInfo 下面**，不在 battleInfo 下。
     # （模板里写的 data[...]['battleInfo'][...] 是 JS 侧再加工后的形状，别照抄。）
+    # ▍关键信息（够判断水平与风格即可，不堆数据）
     BATTLE_FIELDS: dict[str, tuple[str, ...]] = {
-        "battles": ("shipInfo", "battleInfo", "battle"),
-        "wins": ("shipInfo", "battleInfo", "wins"),
-        "losses": ("shipInfo", "battleInfo", "losses"),
-        "survived": ("shipInfo", "battleInfo", "survived"),
-        "win_and_survived": ("shipInfo", "battleInfo", "winAndSurvived"),
-        "win_rate": ("shipInfo", "avgInfo", "win"),
-        "avg_damage": ("shipInfo", "avgInfo", "damage"),
-        "avg_frags": ("shipInfo", "avgInfo", "frags"),
-        "avg_kd": ("shipInfo", "avgInfo", "kd"),
-        "avg_xp": ("shipInfo", "avgInfo", "xp"),
-        "avg_basic_xp": ("shipInfo", "avgInfo", "basicXp"),
-        "avg_scouting_damage": ("shipInfo", "avgInfo", "scoutingDamage"),
-        "avg_planes_killed": ("shipInfo", "avgInfo", "planesKilled"),
-        "avg_ships_spotted": ("shipInfo", "avgInfo", "shipsSpotted"),
-        "avg_art_agro": ("shipInfo", "avgInfo", "artAgro"),
-        "avg_tpd_agro": ("shipInfo", "avgInfo", "tpdAgro"),
-        "hit_ratio": ("shipInfo", "hitRatioInfo", "ratioMain"),
-        "hit_ratio_atba": ("shipInfo", "hitRatioInfo", "ratioAtba"),
-        "hit_ratio_tpd": ("shipInfo", "hitRatioInfo", "ratioTpd"),
-        "hit_ratio_tbomb": ("shipInfo", "hitRatioInfo", "ratioTbomb"),
-        "capture_contribution": ("shipInfo", "controlCapturedAndDroppedPointsInfo", "gameContributionToCapture"),
-        "defense_contribution": ("shipInfo", "controlCapturedAndDroppedPointsInfo", "gameContributionToDefense"),
-        "top_grade": ("shipInfo", "expansion", "topGrade"),
-        "last_battle_time": ("shipInfo", "lastBattleTime"),
-        "pr": ("prInfo", "value"),
-        "pr_next_value": ("prInfo", "nextValue"),
-        "pr_name": ("prInfo", "name"),
+        "battles": ("shipInfo", "battleInfo", "battle"),            # 场次
+        "win_rate": ("shipInfo", "avgInfo", "win"),                 # 胜率
+        "avg_damage": ("shipInfo", "avgInfo", "damage"),            # 场均
+        "hit_ratio": ("shipInfo", "hitRatioInfo", "ratioMain"),     # 命中率
+        "avg_frags": ("shipInfo", "avgInfo", "frags"),              # 击杀
+        "avg_xp": ("shipInfo", "avgInfo", "xp"),                    # 经验
+        "pr": ("prInfo", "value"),                                  # PR
     }
 
-    # ▍模式节点下要递归取出的子树。
-    #   shipInfo     → 上面 BATTLE_FIELDS 已按路径取过；这里负责 maxInfo（最高纪录）
-    #   prInfo       → details.originalServer / userServer / user（PR 分项）
-    #   fragsInfo    → 各类击杀构成（主炮 / 鱼雷 / 飞机 / 撞击 / 深弹 / 空袭）
-    # 用递归提取而不是把每条路径写死：maxInfo 下有十几个 max* 字段，
-    # 写死既啰嗦又容易漏；上游新增纪录字段也能自动带出来。
-    BATTLE_SUBTREES: tuple[str, ...] = ("shipInfo", "fragsInfo", "prInfo")
+    # 最高纪录。
+    # ▍每项末尾的 "value" 不能省：上游 maxInfo 里是 `{shipId, value}` 包装
+    # （例如 maxDamageDealt: {"shipId": …, "value": 419610}），
+    # 少写一层就会把整个对象当成数值交出去。
+    MAX_FIELDS: dict[str, tuple[str, ...]] = {
+        "max_damage": ("shipInfo", "maxInfo", "maxDamageDealt", "value"),
+        "max_total_agro": ("shipInfo", "maxInfo", "maxTotalAgro", "value"),
+        "max_scouting_damage": ("shipInfo", "maxInfo", "maxScoutingDamage", "value"),
+        "max_frags": ("shipInfo", "maxInfo", "maxFrags", "value"),
+        "max_planes_killed": ("shipInfo", "maxInfo", "maxPlanesKilled", "value"),
+        "max_xp": ("shipInfo", "maxInfo", "maxXp", "value"),
+    }
 
-    # 需要改名的字段（叶子键名太泛，直接透出容易误解）
-    _LEAF_ALIASES: dict[str, str] = {"ratioMain": "hit_ratio"}
+    # 「服务器数据」：PR 分项里相对**服务器基线**的口径（details.two / three）。
+    # ▍注意别取 originalServer：那里面是累计值（damage 7 亿、wins 5036 场），
+    # 是原始服务器总盘子，不是场均/胜率；two 才是「服务器数据」那组分项。
+    SERVER_FIELDS: dict[str, tuple[str, ...]] = {
+        "server_avg_damage": ("details", "two", "damage"),
+        "server_win": ("details", "two", "wins"),
+        "server_avg_frags": ("details", "two", "frags"),
+    }
 
-    # 需要四舍五入的小数位
-    _ROUND_2 = frozenset({
-        "win", "frags", "kd", "ratioMain", "ratioMainBb", "ratioMainCa", "ratioMainDd",
-    })
+    # 生存类的派生字段在 battle_stats 里现算，所以这里保留原始存活场次
+    SURVIVED_PATH: tuple[str, ...] = ("shipInfo", "battleInfo", "survived")
 
-    # 渲染专用字段：要么是颜色，要么是把同一个值又包了一层 {value,color}，
-    # 对模型没有意义，过滤掉以省 token
-    _RENDER_ONLY_KEYS = frozenset({"color", "winsData", "damageData", "prData"})
+    # ▍输出键名 -> 上一步取到的原始键名。
+    # 键名对齐**模板界面上显示的中文标签**（wws-ship-v6.html 的
+    # `场次 / 胜率 / 场均 / 命中率 / 存活率 / 击落 / 击杀 / 加成经验` 与
+    # 「最高记录」的 `伤害 / 潜在 / 侦查 / 击杀 / 飞机数 / 经验`），
+    # 这样模型与用户看到的是同一套说法，不会冒出 maxDamageDealt 这种上游字段名。
+    _CORE_ALIAS: dict[str, str] = {
+        "场次": "battles",
+        "胜率": "win_rate",
+        "场均": "avg_damage",
+        "命中率": "hit_ratio",
+        "击杀": "avg_frags",
+        "经验": "avg_xp",
+    }
+    _MAX_ALIAS: dict[str, str] = {
+        "最高伤害": "max_damage",
+        "最高潜在": "max_total_agro",
+        "最高侦察": "max_scouting_damage",
+        "最高击杀": "max_frags",
+        "最高飞机击落": "max_planes_killed",
+        "最高经验": "max_xp",
+    }
+    _SERVER_ALIAS: dict[str, str] = {
+        "服务器场均": "server_avg_damage",
+        "服务器胜率": "server_win",
+        "服务器击杀": "server_avg_frags",
+    }
 
-    # 与数值无关的噪声键：`{shipId, value}` 这类包装里，shipId 只是标记，
-    # 真正的数据是 value。判定「这个字典是不是只包了一个值」时要忽略它们
-    # （以及渲染键），否则会递归进去把父键名丢掉。
-    _NOISE_KEYS = _RENDER_ONLY_KEYS | frozenset({
-        "shipId",
-        "code",
-        # 总表顶层/模式节点里的 `type` 值恒为模式名（"PVP"），不是数据；
-        # prInfo 里的 `name`/`nextValue` 已由 BATTLE_FIELDS 以 pr_name/pr_next_value 取过
-        "type",
-        "nextValue",
-    })
+    # 保留两位小数的键（胜率、击杀、命中率都是小数）
+    _ROUND_KEYS = frozenset({"win_rate", "avg_frags", "hit_ratio", "avg_xp"})
 
     # 总表：船型 / 等级分布的图表节点（每个键下挂着与模式同构的统计）
     DIST_NODES: dict[str, str] = {"ship_types": "shipTypeInfo", "levels": "levelInfo"}
@@ -168,20 +172,35 @@ class BattleStatsExtractor:
         return cur
 
     @classmethod
-    def _pick(cls, data: Any, fields: dict[str, tuple[str, ...]]) -> dict[str, Any]:
-        """按字段白名单提取，自动丢掉取不到的项。
+    def _candidate_paths(cls, path: tuple[str, ...]) -> list[tuple[str, ...]]:
+        """给一条字段路径列出可尝试的变体（原路径优先）。
 
-        路径以 ``shipInfo`` 开头时会**回退**成不带该前缀的路径：
-        真实响应把统计放在 ``<模式>.shipInfo`` 下，但也见过直接摊平在模式节点上的形态，
-        两种都认才不会因为上游改一次结构就整块读空。
+        ▍为什么需要
+        同一份统计数据，在两种响应里挂载层级不同：
+
+        · 总表 / 近期 —— ``battleTypeInfo['PVP']['shipInfo']['battleInfo']['battle']``
+        · 单船       —— ``typeInfo['PVP']['battleInfo']['battleInfo']['battle']``
+                        （少了 shipInfo，却在自己下面又嵌了一层 battleInfo）
+
+        路径统一按总表那套写，取不到时按下面两个变体重试，
+        不然单船会整块读空 —— 之前就是这样漏掉的。
         """
+        candidates = [path]
+        if path and path[0] == "shipInfo":
+            # 单船形状：去掉 shipInfo，并在最前面补一层 battleInfo
+            candidates.append(("battleInfo",) + path[1:])
+        return candidates
+
+    @classmethod
+    def _pick(cls, data: Any, fields: dict[str, tuple[str, ...]]) -> dict[str, Any]:
+        """按字段白名单提取，自动丢掉取不到的项（路径兼容两种挂载形状）。"""
         out: dict[str, Any] = {}
         for name, path in fields.items():
-            value = cls._dig(data, path)
-            if value is None and len(path) > 1 and path[0] == "shipInfo":
-                value = cls._dig(data, path[1:])
-            if value is not None:
-                out[name] = value
+            for candidate in cls._candidate_paths(path):
+                value = cls._dig(data, candidate)
+                if value is not None:
+                    out[name] = value
+                    break
         return out
 
     @staticmethod
@@ -192,62 +211,6 @@ class BattleStatsExtractor:
         if isinstance(value, (int, float)):
             return round(value, digits)
         return value
-
-    @classmethod
-    def _squash(
-        cls,
-        node: Any,
-        out: dict[str, Any],
-        skip: frozenset[str] | None = None,
-        inherited: str = "",
-    ) -> None:
-        """把子树压成「键名 -> 标量」，碰到 ``{value, color}`` 这类包装用**父键名**记值。
-
-        为什么必须这样：上游大量使用
-
-            "maxDamageDealt": {"value": 210000, "color": "#f00"}
-
-        这种「值 + 颜色」包装。如果无脑递归并把叶子按 ``value`` 落进结果，
-        既会互相覆盖（各处都叫 value），也会丢掉 ``maxDamageDealt`` 这个名字
-        —— 模板读的正是 ``['maxInfo']['maxDamageDealt']['value']``，
-        模型也就无从知道这个数字是「最高伤害」。
-
-        Args:
-            skip: 已经在语义字段里提过的键，跳过以免同一份数据重复出现。
-        """
-        if not isinstance(node, dict):
-            return
-        for key, value in node.items():
-            # 噪声键（色值、shipId、code、type…）一律不进结果：
-            # 它们要么是渲染用的，要么只是标记，对模型没价值还占 token
-            if key in cls._NOISE_KEYS:
-                continue
-            if isinstance(value, dict):
-                # 只包了「值 + 噪声键」的，用父键名记下这个值。
-                # 上游这类包装有好几种：{value, color}、{shipId, value}、{code, value, color}。
-                # 不这样处理的话会递归进去，把父键名（maxFrags 等）丢掉，
-                # 只剩一堆互相覆盖的 value。
-                inner = [k for k in value if k not in cls._NOISE_KEYS]
-                if inner == ["value"] and value.get("value") is not None:
-                    name = cls._LEAF_ALIASES.get(key, key)
-                    if not (skip and name in skip):
-                        out[name] = cls._round(value["value"]) if key in cls._ROUND_2 else value["value"]
-                    continue
-                cls._squash(value, out, skip)
-            elif isinstance(value, list):
-                out[f"{key}_count"] = len(value)
-            elif value is not None:
-                name = cls._LEAF_ALIASES.get(key, key)
-                if skip and name in skip:
-                    continue
-                out[name] = cls._round(value) if key in cls._ROUND_2 else value
-
-    @classmethod
-    def _extract_nested(cls, node: Any, out: dict[str, Any] | None = None) -> dict[str, Any]:
-        """递归取出子树里的标量叶子（保留 ``maxDamageDealt`` 这类有名字段）。"""
-        result: dict[str, Any] = {} if out is None else out
-        cls._squash(node, result)
-        return result
 
     @classmethod
     def _mode_payload(cls, data: Any, mode: str, node: Any = None) -> dict[str, Any] | None:
@@ -304,7 +267,7 @@ class BattleStatsExtractor:
 
     @classmethod
     def battle_stats(cls, data: Any, mode: str, node: Any = None) -> dict[str, Any] | None:
-        """单个模式的统计数据；该模式没有场次时返回 None。
+        """单个模式的**关键信息**；该模式没有场次时返回 None。
 
         Args:
             data: 模式统计所在的数据（通常是整个 Output.Data）
@@ -314,48 +277,52 @@ class BattleStatsExtractor:
                 逐船记录必须显式传 —— 它的 ``shipInfo`` 是**船只信息**，
                 里面恰好也有 ``battleInfo`` / ``avgInfo``，自动找会误命中。
 
-        输出对齐模板读取的字段（1:1），命名用「含义」而非上游的驼峰键：
-        语义字段（battles / win_rate / pr …）排在前，同构子树里的
-        「最高纪录 / 击杀构成 / 命中率 / PR 明细」等按名字补在后面。
-        同义字段（avgInfo.win 与 win_rate）只保留语义化的那个，避免同一份数据出现两遍。
+        输出的键名对齐**模板界面上显示的中文标签**（场次/胜率/场均/命中率/
+        存活率/击杀/经验、最高记录的伤害/潜在/侦查/击杀/飞机数/经验），
+        只保留判断水平用得上的一小撮，不堆原始字段。
         """
         payload = cls._mode_payload(data, mode, node)
         if payload is None:
             return None
 
-        stats: dict[str, Any] = cls._pick(payload, cls.BATTLE_FIELDS)
-        for key in ("win_rate", "avg_damage", "avg_frags", "avg_kd", "avg_xp", "hit_ratio"):
-            if key in stats:
-                stats[key] = cls._round(stats[key])
+        stats: dict[str, Any] = {}
 
-        # 总场次：模式节点上的 battle 与 battleInfo.battleInfo.battle 同值，
-        # _pick 取的是后者，缺失时用前者补
-        if "battles" not in stats and (payload.get("battle") or 0) > 0:
-            stats["battles"] = payload["battle"]
+        # 场次 / 胜率 / 场均 / 命中率 / 击杀 / 经验
+        core = cls._pick(payload, cls.BATTLE_FIELDS)
+        for out_key, raw_key in cls._CORE_ALIAS.items():
+            if raw_key in core:
+                value = core[raw_key]
+                stats[out_key] = cls._round(value) if raw_key in cls._ROUND_KEYS else value
 
-        # 上游把"最高纪录"放在 shipInfo.maxInfo 下（不在 battleInfo 里），
-        # 递归时一并取出来，省得把路径写死
-        # ▍去重：shipInfo 下的 battleInfo / avgInfo / hitRatioInfo 里放的是
-        # 「同一份数据的上游键名」（battle、win、damage、frags、kd、xp、ratioMain…），
-        # 上面已经用语义名取过了。跳过它们，但保留 maxInfo / fragsInfo 等独有的字段。
-        # skip 用**父键名**（_squash 遇到 {value, color} 包装时会用父键名记值）。
-        skip: set[str] = set()
-        for path in cls.BATTLE_FIELDS.values():
-            if len(path) >= 2 and path[0] == "shipInfo":
-                skip.add(path[-1])
-        # 叶子别名（ratioMain -> hit_ratio）与 prInfo 里已有语义名的键：
-        # 后者若不跳，prInfo 递归会把 value/name/nextValue 也带出来，
-        # 与 pr / pr_name / pr_next_value 完全重复
-        skip |= set(getattr(cls, "_LEAF_ALIASES", {}) or {})
-        skip |= {"value", "name", "nextValue"}
-        for sub in cls.BATTLE_SUBTREES:
-            node = payload.get(sub)
-            if isinstance(node, dict):
-                cls._squash(node, stats, frozenset(skip))
+        # 存活率：模板显示百分比；上游只给原始存活场次，这里现算。
+        # 路径同样走候选回退 —— 逐船记录是单船结构，没有 shipInfo 那层。
+        battles = core.get("battles")
+        survived = None
+        for candidate in cls._candidate_paths(cls.SURVIVED_PATH):
+            survived = cls._dig(payload, candidate)
+            if survived is not None:
+                break
+        if isinstance(survived, (int, float)) and isinstance(battles, (int, float)) and battles:
+            stats["存活率"] = cls._round(survived / battles * 100, 1)
 
-        stats["mode"] = mode
-        stats["mode_label"] = cls.MODES.get(mode, mode)
-        return stats
+        # 最高记录（maxInfo 里每项是 {shipId, value}，取 value）
+        max_raw = cls._pick(payload, cls.MAX_FIELDS)
+        for out_key, raw_key in cls._MAX_ALIAS.items():
+            if raw_key in max_raw:
+                stats[out_key] = max_raw[raw_key]
+
+        # 服务器数据（PR 分项里的原始服务器口径）
+        pr_details = cls._dig(payload, ("prInfo",))
+        if isinstance(pr_details, dict):
+            server = cls._pick(pr_details, cls.SERVER_FIELDS)
+            for out_key, raw_key in cls._SERVER_ALIAS.items():
+                if raw_key in server:
+                    stats[out_key] = cls._round(server[raw_key])
+
+        stats["PR"] = cls._dig(payload, ("prInfo", "value"))
+        stats["战斗类型"] = mode
+        stats["战斗类型名"] = cls.MODES.get(mode, mode)
+        return {k: v for k, v in stats.items() if v is not None}
 
     @classmethod
     def battle_types(cls, data: Any, only: str | None = None) -> dict[str, Any]:
@@ -416,7 +383,7 @@ class BattleStatsExtractor:
             row = cls._ship_row(ship)
             if row and row.get("ship_name"):
                 rows.append(row)
-        rows.sort(key=lambda r: r.get("battles") or 0, reverse=True)
+        rows.sort(key=lambda r: r.get("场次") or 0, reverse=True)
         return rows[:limit]
 
     @classmethod
@@ -461,7 +428,7 @@ class BattleStatsExtractor:
             row = cls._ship_row(item)
             if row:
                 rows.append(row)
-        rows.sort(key=lambda r: r.get("battles") or 0, reverse=True)
+        rows.sort(key=lambda r: r.get("场次") or 0, reverse=True)
         summary["ships"] = rows[:limit]
         summary["ship_count"] = len(rows)
         return summary
@@ -521,12 +488,12 @@ class BattleStatsExtractor:
 
     # 统计字段摊平在记录里时的候选键名（多数情况下在 typeInfo 里）
     ROW_STAT_CANDIDATES: dict[str, tuple[str, ...]] = {
-        "battles": ("battles", "battle"),
-        "win_rate": ("winRate", "win"),
-        "avg_damage": ("damage", "avgDamage"),
-        "avg_frags": ("frags", "avgFrags"),
-        "survived": ("survived",),
-        "pr": ("pr",),
+        "场次": ("battles", "battle"),
+        "胜率": ("winRate", "win"),
+        "场均": ("damage", "avgDamage"),
+        "击杀": ("frags", "avgFrags"),
+        "存活": ("survived",),
+        "PR": ("pr",),
     }
 
     @staticmethod
@@ -577,7 +544,7 @@ class BattleStatsExtractor:
             if value is None:
                 value = cls._pick_loose(item, candidates)
             if value is not None:
-                row[key] = value if key == "battles" else cls._round(value)
+                row[key] = value if key == "场次" else cls._round(value)
         # 整行都是空的就没必要占用 prompt
         return row if any(k in row for k in cls.ROW_FIELD_CANDIDATES) else {}
 
@@ -615,17 +582,16 @@ class BattleStatsExtractor:
             if not stats:
                 continue
             # 名称一律用分布节点的键（Battleship / 10）：
-            # 别去模式对象里找 name，那里的 `type` 值恰好是 "PVP"，会把船型名覆盖掉
+            # 别去模式对象里找 name，那里的 `type` 值恰好是 "PVP"，会把船型名覆盖掉。
+            # 分布只统计 PVP，模式名逐行重复没意义，所以不再带上。
             rows.append({
                 "name": _distribution_name(key),
-                "mode": mode,
-                "mode_label": cls.MODES.get(mode, mode),
-                "battles": stats.get("battles"),
-                "win_rate": stats.get("win_rate"),
-                "avg_damage": stats.get("avg_damage"),
-                "pr": stats.get("pr"),
+                "场次": stats.get("场次"),
+                "胜率": stats.get("胜率"),
+                "场均": stats.get("场均"),
+                "PR": stats.get("PR"),
             })
-        rows.sort(key=lambda r: r.get("battles") or 0, reverse=True)
+        rows.sort(key=lambda r: r.get("场次") or 0, reverse=True)
         return rows[:limit]
 
     # ---------------------------------------------------------------- 账号绑定
