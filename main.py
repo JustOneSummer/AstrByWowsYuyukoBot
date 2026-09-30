@@ -37,7 +37,7 @@ COMMAND = "wws"
 # AstrBot 平台适配器 -> hikari 的 platform 取值
 PLATFORM_MAP = {
     "aiocqhttp": "QQ",
-    "qq_official_webhook": "QQ_CHANNEL",
+    "qq_official": "QQ_OFFICIAL",
 }
 
 
